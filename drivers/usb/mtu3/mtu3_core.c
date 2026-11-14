@@ -1034,9 +1034,13 @@ bool ssusb_gadget_ip_sleep_check(struct ssusb_mtk *ssusb)
 int ssusb_gadget_suspend(struct ssusb_mtk *ssusb, pm_message_t msg)
 {
 	struct mtu3 *mtu = ssusb->u3d;
+	bool vbus_off = ssusb->force_vbus && !PMSG_IS_AUTO(msg);
 
-	if (!mtu->gadget_driver)
-		goto out;
+	if (!mtu->gadget_driver) {
+		if (vbus_off)
+			mtu3_clrbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_ON);
+		return 0;
+	}
 
 	/* Prevent runtime suspend when active connection exists */
 	if (mtu->connected && PMSG_IS_AUTO(msg))
@@ -1046,13 +1050,15 @@ int ssusb_gadget_suspend(struct ssusb_mtk *ssusb, pm_message_t msg)
 	if (mtu->softconnect && !PMSG_IS_AUTO(msg))
 		mtu3_dev_on_off(mtu, 0);
 
+	/*
+	 * A forced VBUS keeps the IP from entering sleep. Drop it while the
+	 * device MAC is still powered.
+	 */
+	if (vbus_off)
+		mtu3_clrbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_ON);
+
 	mtu3_dev_suspend(mtu);
 	synchronize_irq(mtu->irq);
-
-out:
-	/* A forced VBUS keeps the IP from entering sleep */
-	if (ssusb->force_vbus && !PMSG_IS_AUTO(msg))
-		mtu3_clrbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_ON);
 
 	return 0;
 }
@@ -1060,14 +1066,20 @@ out:
 int ssusb_gadget_resume(struct ssusb_mtk *ssusb, pm_message_t msg)
 {
 	struct mtu3 *mtu = ssusb->u3d;
+	bool vbus_on = ssusb->force_vbus && !PMSG_IS_AUTO(msg);
 
-	if (ssusb->force_vbus && !PMSG_IS_AUTO(msg))
-		mtu3_setbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
-
-	if (!mtu->gadget_driver)
+	if (!mtu->gadget_driver) {
+		if (vbus_on)
+			mtu3_setbits(mtu->mac_base, U3D_MISC_CTRL,
+				     VBUS_FRC_EN | VBUS_ON);
 		return 0;
+	}
 
 	mtu3_dev_resume(mtu);
+
+	/* Once the device MAC is powered again */
+	if (vbus_on)
+		mtu3_setbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
 
 	/* Restore soft connect for system resume */
 	if (mtu->softconnect && !PMSG_IS_AUTO(msg))
