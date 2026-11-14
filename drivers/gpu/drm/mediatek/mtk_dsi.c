@@ -221,6 +221,7 @@ struct mtk_dsi {
 	int refcount;
 	bool enabled;
 	bool lanes_ready;
+	int irq;
 	u32 irq_data;
 	wait_queue_head_t irq_wait_queue;
 	const struct mtk_dsi_driver_data *driver_data;
@@ -649,10 +650,17 @@ static irqreturn_t mtk_dsi_irq(int irq, void *dev_id)
 	status = readl(dsi->regs + DSI_INTSTA) & flag;
 
 	if (status) {
+		/* Bounded: video mode keeps the engine busy indefinitely. */
+		ktime_t timeout = ktime_add_us(ktime_get(), 1000);
+
 		do {
 			mtk_dsi_mask(dsi, DSI_RACK, RACK, RACK);
 			tmp = readl(dsi->regs + DSI_INTSTA);
-		} while (tmp & DSI_BUSY);
+		} while ((tmp & DSI_BUSY) && ktime_before(ktime_get(), timeout));
+
+		if (tmp & DSI_BUSY)
+			dev_warn_ratelimited(dsi->host.dev,
+					     "engine still busy after acknowledging IRQ\n");
 
 		mtk_dsi_mask(dsi, DSI_INTSTA, status, 0);
 		mtk_dsi_irq_data_set(dsi, status);
@@ -752,6 +760,11 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 	mtk_dsi_config_vdo_timing(dsi);
 	mtk_dsi_set_interrupt_enable(dsi);
 
+	/* Drop flags from before the reset, then start taking interrupts. */
+	mtk_dsi_mask(dsi, DSI_INTSTA,
+		     LPRX_RD_RDY_INT_FLAG | CMD_DONE_INT_FLAG | VM_DONE_INT_FLAG, 0);
+	enable_irq(dsi->irq);
+
 	return 0;
 err_disable_engine_clk:
 	clk_disable_unprepare(dsi->engine_clk);
@@ -780,6 +793,7 @@ static void mtk_dsi_poweroff(struct mtk_dsi *dsi)
 	mtk_dsi_stop(dsi);
 
 	mtk_dsi_switch_to_cmd_mode(dsi, VM_DONE_INT_FLAG, 500);
+	disable_irq(dsi->irq);
 	mtk_dsi_reset_engine(dsi);
 	mtk_dsi_lane0_ulp_mode_enter(dsi);
 	mtk_dsi_clk_ulp_mode_enter(dsi);
@@ -1263,8 +1277,15 @@ static int mtk_dsi_probe(struct platform_device *pdev)
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to register DSI host\n");
 
+	/*
+	 * Only enabled while the engine is powered and reset by us: a
+	 * bootloader can hand over with video mode running and interrupts
+	 * enabled and pending, which mtk_dsi_irq() can't acknowledge.
+	 */
+	dsi->irq = irq_num;
 	ret = devm_request_irq(&pdev->dev, irq_num, mtk_dsi_irq,
-			       IRQF_TRIGGER_NONE, dev_name(&pdev->dev), dsi);
+			       IRQF_TRIGGER_NONE | IRQF_NO_AUTOEN,
+			       dev_name(&pdev->dev), dsi);
 	if (ret) {
 		mipi_dsi_host_unregister(&dsi->host);
 		return dev_err_probe(&pdev->dev, ret, "Failed to request DSI irq\n");
