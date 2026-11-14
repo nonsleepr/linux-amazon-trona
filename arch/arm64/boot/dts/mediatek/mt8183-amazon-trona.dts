@@ -3,15 +3,17 @@
  * Amazon Fire HD 10 (11th Gen, 2021) - "trona"
  *
  * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU, touchscreen, the
- * MT6370 backlight and the display left running by LK exposed as a
- * simple-framebuffer. The DSI panel path, the rest of the MT6370
- * (charger/Type-C), audio and WiFi are not described yet.
+ * MT6370 backlight, and the display: LK's framebuffer as a
+ * simple-framebuffer until mediatek-drm takes the FT8201AB DSI panel over.
+ * The rest of the MT6370 (charger/Type-C), audio and WiFi are not
+ * described yet.
  */
 
 /dts-v1/;
 
 #include "mt8183.dtsi"
 #include "mt6358.dtsi"
+#include <dt-bindings/gpio/gpio.h>
 
 / {
 	model = "Amazon Fire HD 10 (11th Gen)";
@@ -64,10 +66,10 @@
 		 * 1200x1920 portrait, eBGRA8888 in MTK terms.
 		 *
 		 * The clocks and power domain keep the display path from being
-		 * gated as unused during late init. That includes the MIPI TX
-		 * PHY's 26 MHz reference (its own node is disabled, so nothing
-		 * else claims it; losing it garbles, then blanks, the panel)
-		 * and the mmsys 26 MHz clocks LK keeps running.
+		 * gated as unused during late init if mediatek-drm hasn't taken
+		 * over by then. That includes the MIPI TX PHY's 26 MHz reference
+		 * (losing it garbles, then blanks, the panel) and the mmsys
+		 * 26 MHz clocks LK keeps running.
 		 */
 		framebuffer0: framebuffer@62dc8000 {
 			compatible = "simple-framebuffer";
@@ -96,6 +98,18 @@
 				 <&apmixedsys CLK_APMIXED_MIPID0_26M>,
 				 <&apmixedsys CLK_APMIXED_MMSYS_26M>,
 				 <&mmsys CLK_MM_26M>;
+		};
+
+		/*
+		 * LK's whole framebuffer carve-out, identity-mapped in the M4U
+		 * for OVL0 (memory-region there). OVL0 keeps scanning out LK's
+		 * layers by physical address until mediatek-drm reprograms it,
+		 * and the M4U takes over its larb port as soon as the display
+		 * components probe. Not under /reserved-memory, see above.
+		 */
+		lk_fb_mem: lk-framebuffer@624e0000 {
+			reg = <0 0x624e0000 0 0x1f20000>;
+			iommu-addresses = <&ovl0 0 0x624e0000 0 0x1f20000>;
 		};
 	};
 
@@ -237,6 +251,37 @@
 	proc-supply = <&mt6358_vproc11_reg>;
 };
 
+&dsi0 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+
+	panel: panel@0 {
+		compatible = "starry,ft8201ab";
+		reg = <0>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&panel_pins>;
+		reset-gpios = <&pio 45 GPIO_ACTIVE_LOW>;
+		touch-reset-gpios = <&pio 2 GPIO_ACTIVE_LOW>;
+		vddi-supply = <&mt6358_vrf18_reg>;
+		avdd-supply = <&lcd_avdd>;
+		avee-supply = <&lcd_avee>;
+		backlight = <&backlight>;
+		/* Landscape device: the panel's left edge is at the camera */
+		rotation = <270>;
+
+		port {
+			panel_in: endpoint {
+				remote-endpoint = <&dsi_out>;
+			};
+		};
+	};
+};
+
+&dsi_out {
+	remote-endpoint = <&panel_in>;
+};
+
 &gpu {
 	mali-supply = <&mt6358_vgpu_reg>;
 };
@@ -351,58 +396,6 @@
 	domain-supply = <&mt6358_vgpu_reg>;
 };
 
-/* Not driven yet; keep the PHY driver away from what LK configured. */
-&mipi_tx0 {
-	status = "disabled";
-};
-
-/*
- * Keep mediatek-drm off the display path until the panel is described.
- * When its components bind they attach to the IOMMU, which turns on
- * translation for the larb0 display ports while OVL0 is still scanning
- * out LK's framebuffer by physical address: endless translation faults
- * and a dead picture under simpledrm.
- */
-&aal0 {
-	status = "disabled";
-};
-
-&ccorr0 {
-	status = "disabled";
-};
-
-&color0 {
-	status = "disabled";
-};
-
-&dither0 {
-	status = "disabled";
-};
-
-&gamma0 {
-	status = "disabled";
-};
-
-&ovl0 {
-	status = "disabled";
-};
-
-&ovl_2l0 {
-	status = "disabled";
-};
-
-&ovl_2l1 {
-	status = "disabled";
-};
-
-&rdma0 {
-	status = "disabled";
-};
-
-&rdma1 {
-	status = "disabled";
-};
-
 &mmc0 {
 	pinctrl-names = "default", "state_uhs";
 	pinctrl-0 = <&mmc0_pins_default>;
@@ -448,9 +441,8 @@
 };
 
 /*
- * Panel (FT8201) 1.8V logic and touch IO supply. Must stay on until the
- * panel driver claims it, or the display dies when unused regulators are
- * disabled ~30s after boot.
+ * Panel (FT8201AB) 1.8V logic and touch IO supply. Both drivers claim it
+ * now; kept on until switching it off with the panel blanked is tested.
  */
 &mt6358_vrf18_reg {
 	regulator-always-on;
@@ -459,6 +451,21 @@
 /* Touch VDD (FT8201 TDDI); keep on until the touch driver claims it. */
 &mt6358_vldo28_reg {
 	regulator-always-on;
+};
+
+/*
+ * When the display components probe they attach to the IOMMU, which turns
+ * on translation for the larb0 display ports while OVL0 is still scanning
+ * out LK's framebuffer by physical address. Without this identity mapping
+ * that means endless translation faults and a dead picture under simpledrm.
+ */
+&ovl0 {
+	memory-region = <&lk_fb_mem>;
+};
+
+/* External display path (DPI); nothing is connected to it. */
+&ovl_2l1 {
+	status = "disabled";
 };
 
 &pio {
@@ -539,6 +546,15 @@
 		};
 	};
 
+	/* LK leaves both resets deasserted (high) with the panel running. */
+	panel_pins: panel-pins {
+		pins-reset {
+			pinmux = <PINMUX_GPIO45__FUNC_GPIO45>,
+				 <PINMUX_GPIO2__FUNC_GPIO2>;
+			output-high;
+		};
+	};
+
 	touchscreen_pins: touchscreen-pins {
 		pins-irq {
 			pinmux = <PINMUX_GPIO1__FUNC_GPIO1>;
@@ -550,6 +566,10 @@
 
 &pmic {
 	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+&rdma1 {
+	status = "disabled";
 };
 
 /*
