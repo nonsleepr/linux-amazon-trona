@@ -50,6 +50,12 @@
 		voltage-min-design-microvolt = <3400000>;
 		voltage-max-design-microvolt = <4400000>;
 		constant-charge-voltage-max-microvolt = <4400000>;
+		/*
+		 * The vendor charges at 3 A, but also lowers voltage and
+		 * current by battery temperature, which isn't done here.
+		 */
+		constant-charge-current-max-microamp = <2000000>;
+		charge-term-current-microamp = <350000>;
 		factory-internal-resistance-micro-ohms = <130000>;
 		ocv-capacity-celsius = <25>;
 		ocv-capacity-table-0 = <4384000 100>, <4368000 99>, <4354000 98>, <4342000 97>,
@@ -447,9 +453,27 @@
 		};
 
 		/* Not brought up yet; keep their drivers off the hardware. */
-		charger {
+		/*
+		 * Charge settings come from the battery node; the input
+		 * current limit follows the BC1.2 result.
+		 */
+		mt6370_charger: charger {
 			compatible = "mediatek,mt6370-charger";
-			status = "disabled";
+			interrupts = <68>, <48>, <6>;
+			interrupt-names = "uvp_d_evt", "attach_i", "mivr";
+			io-channels = <&mt6370_adc MT6370_CHAN_VBUSDIV5>,
+				      <&mt6370_adc MT6370_CHAN_VBUSDIV2>,
+				      <&mt6370_adc MT6370_CHAN_VSYS>,
+				      <&mt6370_adc MT6370_CHAN_VBAT>,
+				      <&mt6370_adc MT6370_CHAN_TS_BAT>,
+				      <&mt6370_adc MT6370_CHAN_IBUS>,
+				      <&mt6370_adc MT6370_CHAN_IBAT>,
+				      <&mt6370_adc MT6370_CHAN_CHG_VDDP>,
+				      <&mt6370_adc MT6370_CHAN_TEMP_JC>;
+			io-channel-names = "vbusdiv5", "vbusdiv2", "vsys",
+					   "vbat", "ts_bat", "ibus", "ibat",
+					   "chg_vddp", "temp_jc";
+			monitored-battery = <&battery>;
 		};
 
 		flashlight {
@@ -682,16 +706,12 @@
 &pmic {
 	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
 
-	/*
-	 * VBUS (from the MT6370 ADC, until its charger is driven) tells
-	 * "not charging" from "discharging" when the charger stops.
-	 */
 	fuel-gauge {
 		compatible = "mediatek,mt6358-gauge";
-		io-channels = <&pmic_adc MT6358_AUXADC_BATADC>,
-			      <&mt6370_adc MT6370_CHAN_VBUSDIV5>;
-		io-channel-names = "vbat", "vbus";
+		io-channels = <&pmic_adc MT6358_AUXADC_BATADC>;
+		io-channel-names = "vbat";
 		monitored-battery = <&battery>;
+		power-supplies = <&mt6370_charger>;
 	};
 };
 
@@ -735,10 +755,15 @@
 /*
  * Peripheral-only until the MT6370 TCPC is described and can drive role
  * switching. USB 2.0 only on this device.
+ *
+ * VBUS doesn't reach the PHY's comparator (the MT6370 senses it), so the
+ * device controller forces VBUS valid itself, and drops that across system
+ * suspend so the IP can sleep.
  */
 &ssusb {
 	dr_mode = "peripheral";
 	maximum-speed = "high-speed";
+	mediatek,force-vbus;
 	/*
 	 * No USB3 here: the U3 MAC clock never becomes stable (LK reports
 	 * the same), and mtu3 refuses to start while it waits for it.
@@ -776,12 +801,12 @@
 };
 
 /*
- * VBUS is sensed by the MT6370 charger, not by the PHY comparator; like the
- * vendor driver, force the USB2 PHY's session-valid signals so the device
- * controller sees a session and can connect.
+ * With the PHY's own session signals left alone (or forced valid, as the
+ * vendor driver does), the SSUSB IP never enters sleep and system suspend
+ * fails with -EBUSY. The device controller forces VBUS instead (above).
  */
 &u2port0 {
-	mediatek,force-vbus;
+	mediatek,force-session-end;
 };
 
 &uart0 {
