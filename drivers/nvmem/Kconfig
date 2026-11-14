@@ -328,6 +328,19 @@ config NVMEM_MTK_EFUSE
 	  This driver can also be built as a module. If so, the module
 	  will be called efuse-mtk.
 
+config NVMEM_MTK_LK_DEVINFO
+	tristate "MediaTek preloader efuse copy (LK atag,devinfo)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF
+	help
+	  Expose the efuse words MediaTek's preloader copies into the
+	  "atag,devinfo" table, which LK passes to the kernel in /chosen.
+	  Some devices can't read their efuse from Linux, so sensor
+	  calibration data has to come from here.
+
+	  This driver can also be built as a module. If so, the module
+	  will be called nvmem_mtk-lk-devinfo.
+
 config NVMEM_MT6323_EFUSE
 	tristate "MediaTek MT6323 PMIC EFUSE support"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
