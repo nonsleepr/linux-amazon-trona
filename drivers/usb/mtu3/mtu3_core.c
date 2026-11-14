@@ -659,8 +659,11 @@ static void mtu3_regs_init(struct mtu3 *mtu)
 
 	/* U2/U3 detected by HW */
 	mtu3_writel(mbase, U3D_DEVICE_CONF, 0);
-	/* vbus detected by HW */
-	mtu3_clrbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
+	/* vbus detected by HW, unless the board can't sense it */
+	if (mtu->ssusb->force_vbus)
+		mtu3_setbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
+	else
+		mtu3_clrbits(mbase, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
 	/* use new QMU format when HW version >= 0x1003 */
 	if (mtu->gen2cp)
 		mtu3_writel(mbase, U3D_QFCR, ~0x0);
@@ -1033,7 +1036,7 @@ int ssusb_gadget_suspend(struct ssusb_mtk *ssusb, pm_message_t msg)
 	struct mtu3 *mtu = ssusb->u3d;
 
 	if (!mtu->gadget_driver)
-		return 0;
+		goto out;
 
 	/* Prevent runtime suspend when active connection exists */
 	if (mtu->connected && PMSG_IS_AUTO(msg))
@@ -1046,12 +1049,20 @@ int ssusb_gadget_suspend(struct ssusb_mtk *ssusb, pm_message_t msg)
 	mtu3_dev_suspend(mtu);
 	synchronize_irq(mtu->irq);
 
+out:
+	/* A forced VBUS keeps the IP from entering sleep */
+	if (ssusb->force_vbus && !PMSG_IS_AUTO(msg))
+		mtu3_clrbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_ON);
+
 	return 0;
 }
 
 int ssusb_gadget_resume(struct ssusb_mtk *ssusb, pm_message_t msg)
 {
 	struct mtu3 *mtu = ssusb->u3d;
+
+	if (ssusb->force_vbus && !PMSG_IS_AUTO(msg))
+		mtu3_setbits(mtu->mac_base, U3D_MISC_CTRL, VBUS_FRC_EN | VBUS_ON);
 
 	if (!mtu->gadget_driver)
 		return 0;

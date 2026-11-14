@@ -262,6 +262,8 @@ struct ssusb_mtk {
 	struct otg_switch_mtk otg_switch;
 	enum usb_dr_mode dr_mode;
 	bool is_host;
+	/* no VBUS sensing: force VBUS valid in the device MAC while running */
+	bool force_vbus;
 	int u2_ports;
 	int u3_ports;
 	int u2p_dis_msk;
