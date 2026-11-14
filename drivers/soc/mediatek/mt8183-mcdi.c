@@ -17,6 +17,10 @@
  * "cluster may power off" handshake that cpuidle-psci has no hook for, so
  * only CPU-level power-down states can be used with this.
  *
+ * With every CPU powered down in suspend-to-idle only some wake sources get
+ * through (the power key does, the RTC alarm doesn't), so power-down states
+ * are kept off over system suspend as well.
+ *
  * Copyright (c) 2026 Toshit Chawda <r58playz@gmail.com>
  */
 
@@ -25,12 +29,14 @@
 #include <linux/bits.h>
 #include <linux/cpu.h>
 #include <linux/cpuhotplug.h>
+#include <linux/cpuidle.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pm_qos.h>
+#include <linux/suspend.h>
 
 /* Mailbox slots, 32 bits each */
 #define MCDI_BUCK_POWER_OFF_MASK	(2 * 4)
@@ -95,6 +101,42 @@ static int mcdi_cpu_dead(unsigned int cpu)
 	return 0;
 }
 
+/* Disable or re-enable every idle state past WFI on all CPUs */
+static void mcdi_power_down_states(bool enable)
+{
+	struct cpuidle_driver *drv, *done = NULL;
+	unsigned int cpu;
+	int i;
+
+	for_each_possible_cpu(cpu) {
+		drv = cpuidle_get_cpu_driver(per_cpu(cpuidle_devices, cpu));
+		if (!drv || drv == done)
+			continue;
+		for (i = 1; i < drv->state_count; i++)
+			cpuidle_driver_state_disabled(drv, i, !enable);
+		done = drv;
+	}
+}
+
+static int mcdi_pm_notifier(struct notifier_block *nb, unsigned long action,
+			    void *data)
+{
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+		mcdi_power_down_states(false);
+		break;
+	case PM_POST_SUSPEND:
+		mcdi_power_down_states(true);
+		break;
+	}
+
+	return NOTIFY_OK;
+}
+
+static struct notifier_block mcdi_pm_nb = {
+	.notifier_call = mcdi_pm_notifier,
+};
+
 /*
  * Before device_initcall, where cpuidle-psci registers the idle states:
  * the mailbox has to be set up before any CPU enters one.
@@ -137,6 +179,8 @@ static int __init mt8183_mcdi_init(void)
 		pr_err("failed to set up CPU hotplug callbacks: %d\n", ret);
 		return ret;
 	}
+
+	register_pm_notifier(&mcdi_pm_nb);
 
 	pr_info("available CPUs %#x published to the MCDI controller\n",
 		readl(mcdi_mbox + MCDI_AVAIL_CPU_MASK));
