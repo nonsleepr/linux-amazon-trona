@@ -455,12 +455,15 @@
 		/* Not brought up yet; keep their drivers off the hardware. */
 		/*
 		 * Charge settings come from the battery node; the input
-		 * current limit follows the BC1.2 result.
+		 * current limit follows the BC1.2 result. The USB PHY is
+		 * switched off D+/D- while BC1.2 runs.
 		 */
 		mt6370_charger: charger {
 			compatible = "mediatek,mt6370-charger";
 			interrupts = <68>, <48>, <6>;
 			interrupt-names = "uvp_d_evt", "attach_i", "mivr";
+			phys = <&u2port0 PHY_TYPE_USB2>;
+			phy-names = "usb";
 			io-channels = <&mt6370_adc MT6370_CHAN_VBUSDIV5>,
 				      <&mt6370_adc MT6370_CHAN_VBUSDIV2>,
 				      <&mt6370_adc MT6370_CHAN_VSYS>,
