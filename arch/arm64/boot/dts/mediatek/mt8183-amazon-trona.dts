@@ -2,11 +2,11 @@
 /*
  * Amazon Fire HD 10 (11th Gen, 2021) - "trona"
  *
- * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU, touchscreen, the
- * MT6370 backlight, and the display: LK's framebuffer as a
- * simple-framebuffer until mediatek-drm takes the FT8201AB DSI panel over.
- * The rest of the MT6370 (charger/Type-C), audio and WiFi are not
- * described yet.
+ * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU, touchscreen,
+ * keys, the MT6358 fuel gauge, the MT6370 backlight, and the display: LK's
+ * framebuffer as a simple-framebuffer until mediatek-drm takes the FT8201AB
+ * DSI panel over. The rest of the MT6370 (charger/Type-C), audio and WiFi
+ * are not described yet.
  */
 
 /dts-v1/;
@@ -14,6 +14,8 @@
 #include "mt8183.dtsi"
 #include "mt6358.dtsi"
 #include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/iio/adc/mediatek,mt6358-auxadc.h>
+#include <dt-bindings/iio/adc/mediatek,mt6370_adc.h>
 
 / {
 	model = "Amazon Fire HD 10 (11th Gen)";
@@ -31,6 +33,51 @@
 	aliases {
 		mmc0 = &mmc0;
 		serial0 = &uart0;
+	};
+
+	/*
+	 * The "NVT/ATL" cell of the vendor gauge's first profile (battery ID
+	 * 0: the ID resistor on AUXADC channel 4 reads below 1100 mV). The OCV
+	 * table is the vendor's 25 C profile with GM3.0's 6500 mAh Qmax as
+	 * 100 percent, so 0 is at 3.655 V and leaves ~300 mAh before the
+	 * vendor's 3.4 V shutdown voltage. The internal resistance is what the
+	 * gauge sees between the cell and BATSNS: ~158 mV drop at 1.18 A.
+	 */
+	battery: battery {
+		compatible = "simple-battery";
+		device-chemistry = "lithium-ion-polymer";
+		charge-full-design-microamp-hours = <6500000>;
+		voltage-min-design-microvolt = <3400000>;
+		voltage-max-design-microvolt = <4400000>;
+		constant-charge-voltage-max-microvolt = <4400000>;
+		factory-internal-resistance-micro-ohms = <130000>;
+		ocv-capacity-celsius = <25>;
+		ocv-capacity-table-0 = <4384000 100>, <4368000 99>, <4354000 98>, <4342000 97>,
+					<4329000 96>, <4317000 95>, <4305000 94>, <4294000 93>,
+					<4283000 92>, <4272000 91>, <4260000 90>, <4249000 89>,
+					<4238000 88>, <4226000 87>, <4215000 86>, <4204000 85>,
+					<4193000 84>, <4182000 83>, <4171000 82>, <4160000 81>,
+					<4149000 80>, <4138000 79>, <4128000 78>, <4117000 77>,
+					<4107000 76>, <4097000 75>, <4087000 74>, <4078000 73>,
+					<4069000 72>, <4060000 71>, <4050000 70>, <4040000 69>,
+					<4029000 68>, <4019000 67>, <4010000 66>, <4001000 65>,
+					<3992000 64>, <3983000 63>, <3974000 62>, <3967000 61>,
+					<3960000 60>, <3952000 59>, <3944000 58>, <3936000 57>,
+					<3927000 56>, <3916000 55>, <3905000 54>, <3893000 53>,
+					<3883000 52>, <3874000 51>, <3867000 50>, <3861000 49>,
+					<3855000 48>, <3850000 47>, <3845000 46>, <3841000 45>,
+					<3837000 44>, <3833000 43>, <3829000 42>, <3825000 41>,
+					<3821000 40>, <3817000 39>, <3814000 38>, <3810000 37>,
+					<3807000 36>, <3805000 35>, <3801000 34>, <3798000 33>,
+					<3796000 32>, <3793000 31>, <3790000 30>, <3788000 29>,
+					<3786000 28>, <3783000 27>, <3781000 26>, <3777000 25>,
+					<3774000 24>, <3769000 23>, <3765000 22>, <3762000 21>,
+					<3758000 20>, <3754000 19>, <3750000 18>, <3747000 17>,
+					<3744000 16>, <3741000 15>, <3737000 14>, <3731000 13>,
+					<3725000 12>, <3720000 11>, <3714000 10>, <3708000 9>,
+					<3700000 8>, <3694000 7>, <3692000 6>, <3691000 5>,
+					<3690000 4>, <3689000 3>, <3686000 2>, <3679000 1>,
+					<3655000 0>;
 	};
 
 	chosen {
@@ -110,6 +157,22 @@
 		lk_fb_mem: lk-framebuffer@624e0000 {
 			reg = <0 0x624e0000 0 0x1f20000>;
 			iommu-addresses = <&ovl0 0 0x624e0000 0 0x1f20000>;
+		};
+	};
+
+	/*
+	 * The preloader's efuse copy, which LK passes in /chosen. The efuse
+	 * block itself reads back as zeros from Linux, so calibration data
+	 * has to come from here. Cells are by devinfo index (offset 4 * n).
+	 */
+	devinfo {
+		compatible = "mediatek,lk-devinfo";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* devinfo[100..102]: the efuse words at 0x180..0x188 */
+		lk_thermal_calibration: thermal-calibration@190 {
+			reg = <0x190 0xc>;
 		};
 	};
 
@@ -356,7 +419,7 @@
 		#interrupt-cells = <1>;
 		wakeup-source;
 
-		adc {
+		mt6370_adc: adc {
 			compatible = "mediatek,mt6370-adc";
 			#io-channel-cells = <1>;
 		};
@@ -605,6 +668,18 @@
 
 &pmic {
 	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
+
+	/*
+	 * VBUS (from the MT6370 ADC, until its charger is driven) tells
+	 * "not charging" from "discharging" when the charger stops.
+	 */
+	fuel-gauge {
+		compatible = "mediatek,mt6358-gauge";
+		io-channels = <&pmic_adc MT6358_AUXADC_BATADC>,
+			      <&mt6370_adc MT6370_CHAN_VBUSDIV5>;
+		io-channel-names = "vbat", "vbus";
+		monitored-battery = <&battery>;
+	};
 };
 
 &rdma1 {
@@ -665,6 +740,14 @@
  */
 &systimer {
 	status = "disabled";
+};
+
+/*
+ * Without the real calibration the sensors read ~20 C at idle and ran
+ * into the 115 C critical trip under an all-core load.
+ */
+&thermal {
+	nvmem-cells = <&lk_thermal_calibration>;
 };
 
 /*
