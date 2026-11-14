@@ -46,11 +46,19 @@
 
 #define MT6370_MIVR_IBUS_TH_100_mA	100000
 #define MT6370_ADC_CHAN_IBUS		5
+
+/*
+ * Input current limits by BC1.2 result. The MIVR loop backs the current
+ * off if a charger can't keep VBUS up.
+ */
+#define MT6370_AICR_SDP_UA		500000
+#define MT6370_AICR_CDP_UA		1500000
+#define MT6370_AICR_DCP_UA		2000000
 #define MT6370_ADC_CHAN_MAX		9
 
 enum mt6370_chg_reg_field {
 	/* MT6370_REG_CHG_CTRL2 */
-	F_IINLMTSEL, F_CFO_EN, F_CHG_EN,
+	F_TE, F_IINLMTSEL, F_CFO_EN, F_CHG_EN,
 	/* MT6370_REG_CHG_CTRL3 */
 	F_IAICR, F_AICR_EN, F_ILIM_EN,
 	/* MT6370_REG_CHG_CTRL4 */
@@ -152,6 +160,7 @@ static const struct linear_range mt6370_chg_ranges[MT6370_RANGE_F_MAX] = {
 }
 
 static const struct mt6370_chg_field mt6370_chg_fields[F_MAX] = {
+	MT6370_CHG_FIELD(F_TE, MT6370_REG_CHG_CTRL2, 4, 4),
 	MT6370_CHG_FIELD(F_IINLMTSEL, MT6370_REG_CHG_CTRL2, 2, 3),
 	MT6370_CHG_FIELD(F_CFO_EN, MT6370_REG_CHG_CTRL2, 1, 1),
 	MT6370_CHG_FIELD(F_CHG_EN, MT6370_REG_CHG_CTRL2, 0, 0),
@@ -257,7 +266,7 @@ static void mt6370_chg_bc12_work_func(struct work_struct *work)
 						bc12_work);
 	int ret;
 	bool rpt_psy = false;
-	unsigned int attach, usb_stat;
+	unsigned int attach, usb_stat, aicr;
 
 	mutex_lock(&priv->attach_lock);
 	attach = priv->attach;
@@ -289,19 +298,27 @@ static void mt6370_chg_bc12_work_func(struct work_struct *work)
 	case MT6370_USB_STAT_SDP:
 	case MT6370_USB_STAT_SDP_NSTD:
 		priv->psy_usb_type = POWER_SUPPLY_USB_TYPE_SDP;
+		aicr = MT6370_AICR_SDP_UA;
 		break;
 	case MT6370_USB_STAT_DCP:
 		priv->psy_usb_type = POWER_SUPPLY_USB_TYPE_DCP;
+		aicr = MT6370_AICR_DCP_UA;
 		break;
 	case MT6370_USB_STAT_CDP:
 		priv->psy_usb_type = POWER_SUPPLY_USB_TYPE_CDP;
+		aicr = MT6370_AICR_CDP_UA;
 		break;
 	case MT6370_USB_STAT_NO_VBUS:
 	case MT6370_USB_STAT_VBUS_FLOW_IS_UNDER_GOING:
 	default:
 		priv->psy_usb_type = POWER_SUPPLY_USB_TYPE_UNKNOWN;
+		aicr = MT6370_AICR_SDP_UA;
 		break;
 	}
+
+	ret = mt6370_chg_field_set(priv, F_IAICR, aicr);
+	if (ret)
+		dev_err(priv->dev, "Failed to set input current limit\n");
 
 bc12_work_func_out:
 	mutex_unlock(&priv->attach_lock);
@@ -727,6 +744,42 @@ static int mt6370_chg_init_setting(struct mt6370_priv *priv)
 	return 0;
 }
 
+/* Charge voltage, current and termination from the monitored battery */
+static int mt6370_chg_init_battery(struct mt6370_priv *priv)
+{
+	struct power_supply_battery_info *info;
+	int ret;
+
+	ret = power_supply_get_battery_info(priv->psy, &info);
+	if (ret)
+		return (ret == -ENOENT || ret == -ENODEV) ? 0 : ret;
+
+	if (info->constant_charge_voltage_max_uv > 0) {
+		ret = mt6370_chg_field_set(priv, F_VOREG,
+					   info->constant_charge_voltage_max_uv);
+		if (ret)
+			goto out;
+	}
+
+	if (info->constant_charge_current_max_ua > 0) {
+		ret = mt6370_chg_field_set(priv, F_ICHG,
+					   info->constant_charge_current_max_ua);
+		if (ret)
+			goto out;
+	}
+
+	if (info->charge_term_current_ua > 0) {
+		ret = mt6370_chg_field_set(priv, F_IEOC,
+					   info->charge_term_current_ua);
+		if (!ret)
+			ret = mt6370_chg_field_set(priv, F_TE, 1);
+	}
+
+out:
+	power_supply_put_battery_info(priv->psy, info);
+	return ret;
+}
+
 #define MT6370_CHG_DT_PROP_DECL(_name, _type, _field)	\
 {							\
 	.name = "mediatek,chg-" #_name,			\
@@ -900,6 +953,11 @@ static int mt6370_chg_probe(struct platform_device *pdev)
 	if (ret)
 		return dev_err_probe(dev, ret,
 				     "Failed to init mt6370 charger setting\n");
+
+	ret = mt6370_chg_init_battery(priv);
+	if (ret)
+		return dev_err_probe(dev, ret,
+				     "Failed to apply battery settings\n");
 
 	ret = mt6370_chg_init_irq(priv);
 	if (ret)
