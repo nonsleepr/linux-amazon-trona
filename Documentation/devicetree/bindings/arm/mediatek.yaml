@@ -159,6 +159,10 @@ properties:
           - enum:
               - mediatek,mt8173-evb
           - const: mediatek,mt8173
+      - description: Amazon Fire HD 10 (11th Gen)
+        items:
+          - const: amazon,trona
+          - const: mediatek,mt8183
       - description: Google Burnet (HP Chromebook x360 11MK G3 EE)
         items:
           - const: google,burnet

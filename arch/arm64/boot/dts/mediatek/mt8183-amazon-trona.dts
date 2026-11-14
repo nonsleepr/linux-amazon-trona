@@ -1,0 +1,499 @@
+// SPDX-License-Identifier: (GPL-2.0 OR MIT)
+/*
+ * Amazon Fire HD 10 (11th Gen, 2021) - "trona"
+ *
+ * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU and the display
+ * left running by LK exposed as a simple-framebuffer. The FT8201 panel,
+ * touch, MT6370 (charger/backlight/Type-C), audio and WiFi are not
+ * described yet.
+ */
+
+/dts-v1/;
+
+#include "mt8183.dtsi"
+#include "mt6358.dtsi"
+
+/ {
+	model = "Amazon Fire HD 10 (11th Gen)";
+	chassis-type = "tablet";
+	compatible = "amazon,trona", "mediatek,mt8183";
+
+	/*
+	 * Amazon's LK maps the board ID to a hardware revision and only
+	 * accepts an appended DTB whose root "version" matches it; otherwise
+	 * it boots the kernel with no device tree at all. This unit (and the
+	 * vendor DT it shipped with) is "dvt".
+	 */
+	version = "dvt";
+
+	aliases {
+		mmc0 = &mmc0;
+		serial0 = &uart0;
+	};
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * LK's bootargs_init() asserts that /chosen/bootargs exists
+		 * (and panics otherwise); it uses it as the start of the
+		 * command line and appends its own and the boot.img's.
+		 */
+		bootargs = "console=tty0";
+		stdout-path = "serial0:921600n8";
+
+		/*
+		 * Keep the kernel off LK's framebuffer carve-out
+		 * (0x624e0000-0x64400000). It can't be a no-map node under
+		 * /reserved-memory: LK's reserved_memory_conflict_check() spins
+		 * forever on any node overlapping its own reservations, and the
+		 * "mblock-6-framebuffer" node LK adds itself is mapped. Leaving
+		 * it out of System RAM lets simpledrm ioremap it write-combined.
+		 */
+		linux,usable-memory-range = <0 0x40000000 0 0x224e0000>,
+					    <0 0x64400000 0 0x9bc00000>;
+
+		/*
+		 * LK initialises the FT8201 panel and hands over with two
+		 * full-screen opaque OVL0 layers enabled: layer 0 at the
+		 * "atag,videolfb" fb_base (0x624e0000, 1216-pixel pitch) and,
+		 * on top of it, layer 3 at 0x62dc8000 with its logo screen.
+		 * Only layer 3 is visible, so that is the buffer to draw into.
+		 * 1200x1920 portrait, eBGRA8888 in MTK terms.
+		 *
+		 * The clocks and power domain keep the display path from being
+		 * gated as unused during late init. That includes the MIPI TX
+		 * PHY's 26 MHz reference (its own node is disabled, so nothing
+		 * else claims it; losing it garbles, then blanks, the panel)
+		 * and the mmsys 26 MHz clocks LK keeps running.
+		 */
+		framebuffer0: framebuffer@62dc8000 {
+			compatible = "simple-framebuffer";
+			reg = <0 0x62dc8000 0 (1200 * 1920 * 4)>;
+			width = <1200>;
+			height = <1920>;
+			stride = <(1200 * 4)>;
+			format = "a8r8g8b8";
+			power-domains = <&spm MT8183_POWER_DOMAIN_DISP>;
+			clocks = <&mmsys CLK_MM_SMI_COMMON>,
+				 <&mmsys CLK_MM_SMI_LARB0>,
+				 <&mmsys CLK_MM_GALS_COMM0>,
+				 <&mmsys CLK_MM_GALS_COMM1>,
+				 <&mmsys CLK_MM_DISP_OVL0>,
+				 <&mmsys CLK_MM_DISP_OVL0_2L>,
+				 <&mmsys CLK_MM_DISP_RDMA0>,
+				 <&mmsys CLK_MM_DISP_COLOR0>,
+				 <&mmsys CLK_MM_DISP_CCORR0>,
+				 <&mmsys CLK_MM_DISP_AAL0>,
+				 <&mmsys CLK_MM_DISP_GAMMA0>,
+				 <&mmsys CLK_MM_DISP_DITHER0>,
+				 <&mmsys CLK_MM_DSI0_MM>,
+				 <&mmsys CLK_MM_DSI0_IF>,
+				 <&topckgen CLK_TOP_MUX_DISP_PWM>,
+				 <&infracfg CLK_INFRA_DISP_PWM>,
+				 <&apmixedsys CLK_APMIXED_MIPID0_26M>,
+				 <&apmixedsys CLK_APMIXED_MMSYS_26M>,
+				 <&mmsys CLK_MM_26M>;
+		};
+	};
+
+	/* LK rewrites this with the real DRAM layout (3 GiB on this SKU). */
+	memory@40000000 {
+		device_type = "memory";
+		reg = <0 0x40000000 0 0xc0000000>;
+	};
+
+	/*
+	 * Only regions LK does not reserve itself go here. LK adds its own
+	 * carve-outs (ATF, TEE, SPM, SSPM, VPU no-map, plus the framebuffer)
+	 * as "mblock-N-*" nodes at boot, and its
+	 * reserved_memory_conflict_check() hangs in "fatal error keep
+	 * while (1)" if any node here overlaps them, exact duplicates
+	 * included.
+	 */
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		ram_console@54400000 {
+			reg = <0 0x54400000 0 0x10000>;
+		};
+
+		/* Vendor pstore region, reused for ramoops across warm reboots. */
+		ramoops@54410000 {
+			compatible = "ramoops";
+			reg = <0 0x54410000 0 0xe0000>;
+			/*
+			 * The vendor kernel lays its zones out differently, so
+			 * TWRP can't read these back; tools/trona-pl-rescue.py
+			 * finds them from the preloader instead.
+			 */
+			record-size = <0x1000>;
+			console-size = <0x40000>;
+			ftrace-size = <0x1000>;
+			pmsg-size = <0x10000>;
+		};
+
+		minirdump@544f0000 {
+			reg = <0 0x544f0000 0 0x10000>;
+		};
+
+		mdump@6ffc0000 {
+			reg = <0 0x6ffc0000 0 0x40000>;
+		};
+	};
+
+	/*
+	 * Not used by Linux. Amazon's LK only turns the MT6370 backlight on
+	 * (at the IDME bl_level) when it finds this vendor node at
+	 * /odm/led@6; without it the panel is initialised but stays dark.
+	 */
+	odm {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		led@6 {
+			compatible = "mediatek,lcd-backlight";
+			reg = <6>;
+			led_mode = <3>;
+			data = <1>;
+			pwm_config = <0 1 0 0 0>;
+		};
+	};
+};
+
+/*
+ * The vendor DT hardcodes the 13 MHz system counter frequency; don't rely on
+ * the vendor ATF having programmed CNTFRQ_EL0.
+ */
+&{/timer} {
+	clock-frequency = <13000000>;
+};
+
+&cci {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu0 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu1 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu2 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu3 {
+	proc-supply = <&mt6358_vproc12_reg>;
+};
+
+&cpu4 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&cpu5 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&cpu6 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&cpu7 {
+	proc-supply = <&mt6358_vproc11_reg>;
+};
+
+&gpu {
+	mali-supply = <&mt6358_vgpu_reg>;
+};
+
+/*
+ * MT6370 sub-PMIC ("i2c5" in Amazon's tree). Only the backlight is driven
+ * for now: Amazon's LK leaves the BLED in PWM-dimming mode with nothing
+ * feeding the PWM input, so the panel stays dark. The driver switches it
+ * to I2C dimming. Settings mirror the vendor bled node (4 channels,
+ * OVP 29 V, OCP 1.5 A, brightness capped at 1370). The DSV rails biasing
+ * the panel come from this chip too; the regulator cell gets no
+ * constraints from DT and so leaves them as LK set them.
+ */
+&i2c11 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	pmic@34 {
+		compatible = "mediatek,mt6370";
+		reg = <0x34>;
+		interrupts-extended = <&pio 10 IRQ_TYPE_LEVEL_LOW>;
+		interrupt-controller;
+		#interrupt-cells = <1>;
+		wakeup-source;
+
+		backlight {
+			compatible = "mediatek,mt6370-backlight";
+			mediatek,bled-channel-use = /bits/ 8 <15>;
+			mediatek,bled-ovp-microvolt = <29000000>;
+			mediatek,bled-ocp-microamp = <1500000>;
+			max-brightness = <1370>;
+			default-brightness = <512>;
+		};
+
+		/* Not brought up yet; keep their drivers off the hardware. */
+		charger {
+			compatible = "mediatek,mt6370-charger";
+			status = "disabled";
+		};
+
+		flashlight {
+			compatible = "mediatek,mt6370-flashlight";
+			status = "disabled";
+		};
+
+		indicator {
+			compatible = "mediatek,mt6370-indicator";
+			status = "disabled";
+		};
+
+		tcpc {
+			compatible = "mediatek,mt6370-tcpc";
+			status = "disabled";
+		};
+	};
+};
+
+&mfg_async {
+	domain-supply = <&mt6358_vsram_gpu_reg>;
+};
+
+&mfg {
+	domain-supply = <&mt6358_vgpu_reg>;
+};
+
+/* Not driven yet; keep the PHY driver away from what LK configured. */
+&mipi_tx0 {
+	status = "disabled";
+};
+
+/*
+ * Keep mediatek-drm off the display path until the panel is described.
+ * When its components bind they attach to the IOMMU, which turns on
+ * translation for the larb0 display ports while OVL0 is still scanning
+ * out LK's framebuffer by physical address: endless translation faults
+ * and a dead picture under simpledrm.
+ */
+&aal0 {
+	status = "disabled";
+};
+
+&ccorr0 {
+	status = "disabled";
+};
+
+&color0 {
+	status = "disabled";
+};
+
+&dither0 {
+	status = "disabled";
+};
+
+&gamma0 {
+	status = "disabled";
+};
+
+&ovl0 {
+	status = "disabled";
+};
+
+&ovl_2l0 {
+	status = "disabled";
+};
+
+&ovl_2l1 {
+	status = "disabled";
+};
+
+&rdma0 {
+	status = "disabled";
+};
+
+&rdma1 {
+	status = "disabled";
+};
+
+&mmc0 {
+	pinctrl-names = "default", "state_uhs";
+	pinctrl-0 = <&mmc0_pins_default>;
+	pinctrl-1 = <&mmc0_pins_uhs>;
+	bus-width = <8>;
+	max-frequency = <200000000>;
+	cap-mmc-highspeed;
+	/* HS400 needs board-specific ds-delay tuning; HS200 until verified. */
+	mmc-hs200-1_8v;
+	cap-mmc-hw-reset;
+	no-sdio;
+	no-sd;
+	non-removable;
+	vmmc-supply = <&mt6358_vemc_reg>;
+	vqmmc-supply = <&mt6358_vio18_reg>;
+	assigned-clocks = <&topckgen CLK_TOP_MUX_MSDC50_0>;
+	assigned-clock-parents = <&topckgen CLK_TOP_MSDCPLL_CK>;
+	status = "okay";
+};
+
+/*
+ * LPDDR4X VDDQ (as on kukui). Unclaimed, it was switched off by the
+ * regulator late cleanup 30 s after boot, and the system died with it.
+ */
+&mt6358_vdram2_reg {
+	regulator-always-on;
+};
+
+&mt6358_vgpu_reg {
+	regulator-min-microvolt = <625000>;
+	regulator-max-microvolt = <900000>;
+
+	regulator-coupled-with = <&mt6358_vsram_gpu_reg>;
+	regulator-coupled-max-spread = <100000>;
+};
+
+&mt6358_vsram_gpu_reg {
+	regulator-min-microvolt = <850000>;
+	regulator-max-microvolt = <1000000>;
+
+	regulator-coupled-with = <&mt6358_vgpu_reg>;
+	regulator-coupled-max-spread = <100000>;
+};
+
+/*
+ * Panel (FT8201) 1.8V logic and touch IO supply. Must stay on until the
+ * panel driver claims it, or the display dies when unused regulators are
+ * disabled ~30s after boot.
+ */
+&mt6358_vrf18_reg {
+	regulator-always-on;
+};
+
+/* Touch VDD (FT8201 TDDI); keep on until the touch driver claims it. */
+&mt6358_vldo28_reg {
+	regulator-always-on;
+};
+
+&pio {
+	mmc0_pins_default: mmc0-pins-default {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO128__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO125__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO132__FUNC_MSDC0_DAT3>,
+				 <PINMUX_GPIO126__FUNC_MSDC0_DAT4>,
+				 <PINMUX_GPIO129__FUNC_MSDC0_DAT5>,
+				 <PINMUX_GPIO127__FUNC_MSDC0_DAT6>,
+				 <PINMUX_GPIO130__FUNC_MSDC0_DAT7>,
+				 <PINMUX_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-up-adv = <01>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO124__FUNC_MSDC0_CLK>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <2>;
+		};
+
+		pins_rst {
+			pinmux = <PINMUX_GPIO133__FUNC_MSDC0_RSTB>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <01>;
+		};
+	};
+
+	mmc0_pins_uhs: mmc0-pins-uhs {
+		pins_cmd_dat {
+			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
+				 <PINMUX_GPIO128__FUNC_MSDC0_DAT1>,
+				 <PINMUX_GPIO125__FUNC_MSDC0_DAT2>,
+				 <PINMUX_GPIO132__FUNC_MSDC0_DAT3>,
+				 <PINMUX_GPIO126__FUNC_MSDC0_DAT4>,
+				 <PINMUX_GPIO129__FUNC_MSDC0_DAT5>,
+				 <PINMUX_GPIO127__FUNC_MSDC0_DAT6>,
+				 <PINMUX_GPIO130__FUNC_MSDC0_DAT7>,
+				 <PINMUX_GPIO122__FUNC_MSDC0_CMD>;
+			input-enable;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-up-adv = <01>;
+		};
+
+		pins_clk {
+			pinmux = <PINMUX_GPIO124__FUNC_MSDC0_CLK>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <2>;
+		};
+
+		pins_ds {
+			pinmux = <PINMUX_GPIO131__FUNC_MSDC0_DSL>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-down-adv = <2>;
+		};
+
+		pins_rst {
+			pinmux = <PINMUX_GPIO133__FUNC_MSDC0_RSTB>;
+			drive-strength = <MTK_DRIVE_14mA>;
+			mediatek,pull-up-adv = <01>;
+		};
+	};
+};
+
+&pmic {
+	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
+};
+
+/* SCP (needed for the video codecs) is unused for now; no carve-out yet. */
+&scp {
+	/delete-property/ memory-region;
+};
+
+/*
+ * Peripheral-only until the MT6370 TCPC is described and can drive role
+ * switching. USB 2.0 only on this device.
+ */
+&ssusb {
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	/*
+	 * No USB3 here: the U3 MAC clock never becomes stable (LK reports
+	 * the same), and mtu3 refuses to start while it waits for it.
+	 */
+	mediatek,u3p-dis-msk = <1>;
+	vusb33-supply = <&mt6358_vusb_reg>;
+	status = "okay";
+};
+
+/*
+ * The stock kernel only reads this timer's counter; the vendor firmware
+ * appears to use the compare channel timer-mediatek drives as the broadcast
+ * clockevent. With it enabled the SoC froze a tick or two after the switch
+ * to oneshot mode. arm64 falls back to the hrtimer-based broadcast.
+ */
+&systimer {
+	status = "disabled";
+};
+
+/*
+ * VBUS is sensed by the MT6370 charger, not by the PHY comparator; like the
+ * vendor driver, force the USB2 PHY's session-valid signals so the device
+ * controller sees a session and can connect.
+ */
+&u2port0 {
+	mediatek,force-vbus;
+};
+
+&uart0 {
+	status = "okay";
+};
