@@ -1197,6 +1197,16 @@ static int mtk_drm_probe(struct platform_device *pdev)
 		goto err_node;
 	}
 
+	/*
+	 * All display components may be disabled in the board DT; the
+	 * component framework does not accept an empty match list.
+	 */
+	if (!match) {
+		dev_dbg(dev, "No display components available\n");
+		ret = -ENODEV;
+		goto err_node;
+	}
+
 	pm_runtime_enable(dev);
 
 	platform_set_drvdata(pdev, private);
