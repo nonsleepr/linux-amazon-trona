@@ -336,7 +336,7 @@ struct mtk_phy_instance {
 	int discth;
 	int pre_emphasis;
 	bool bc12_en;
-	bool force_vbus;
+	bool force_session_end;
 	bool type_force_mode;
 };
 
@@ -878,17 +878,22 @@ static void u2_phy_instance_power_on(struct mtk_tphy *tphy,
 	/* OTG Enable */
 	mtk_phy_set_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
 
-	/*
-	 * Boards that sense VBUS with an external charger instead of the
-	 * PHY comparator: make the session valid/end values below the ones
-	 * the controller sees.
-	 */
-	if (instance->force_vbus)
-		mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_FORCE_VBUSVALID |
-				 P2C_FORCE_AVALID | P2C_FORCE_SESSEND);
 	mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_RG_VBUSVALID | P2C_RG_AVALID);
 
 	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_SESSEND);
+
+	/*
+	 * Boards whose VBUS doesn't reach the PHY comparator (the device
+	 * controller forces VBUS itself): pin the session signals to "no
+	 * session", or the IP never enters sleep and system suspend fails.
+	 */
+	if (instance->force_session_end) {
+		mtk_phy_clear_bits(com + U3P_U2PHYDTM1,
+				   P2C_RG_VBUSVALID | P2C_RG_AVALID);
+		mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_RG_SESSEND |
+				 P2C_FORCE_VBUSVALID | P2C_FORCE_AVALID |
+				 P2C_FORCE_SESSEND);
+	}
 
 	if (tphy->pdata->avoid_rx_sen_degradation && index) {
 		mtk_phy_set_bits(com + U3D_U2PHYDCR0, P2C_RG_SIF_U2PLL_FORCE_ON);
@@ -1145,7 +1150,8 @@ static void phy_parse_property(struct mtk_tphy *tphy,
 		return;
 
 	instance->bc12_en = device_property_read_bool(dev, "mediatek,bc12");
-	instance->force_vbus = device_property_read_bool(dev, "mediatek,force-vbus");
+	instance->force_session_end =
+		device_property_read_bool(dev, "mediatek,force-session-end");
 	device_property_read_u32(dev, "mediatek,eye-src",
 				 &instance->eye_src);
 	device_property_read_u32(dev, "mediatek,eye-vrt",
