@@ -215,6 +215,14 @@
 	clock-frequency = <13000000>;
 };
 
+/*
+ * Channel 4 reads the battery cell ID resistor (the vendor gauge picks its
+ * battery profile from it).
+ */
+&auxadc {
+	status = "okay";
+};
+
 &cci {
 	proc-supply = <&mt6358_vproc12_reg>;
 };
@@ -306,6 +314,23 @@
 		touchscreen-size-x = <1200>;
 		touchscreen-size-y = <1920>;
 	};
+};
+
+/*
+ * Volume keys, wired as "direct keys": KPCOL0/KPCOL1 against row 0, which
+ * is a GPIO held low rather than KPROW0 (as LK sets it up). The MT6358
+ * power key is reported by mtk-pmic-keys.
+ */
+&keyboard {
+	pinctrl-names = "default";
+	pinctrl-0 = <&keypad_pins>;
+	linux,keymap = <MATRIX_KEY(0, 0, KEY_VOLUMEDOWN)
+			MATRIX_KEY(0, 1, KEY_VOLUMEUP)>;
+	keypad,num-rows = <1>;
+	keypad,num-columns = <2>;
+	debounce-delay-ms = <32>;
+	mediatek,keys-per-group = <1>;
+	status = "okay";
 };
 
 /*
@@ -469,6 +494,20 @@
 };
 
 &pio {
+	keypad_pins: keypad-pins {
+		pins-row {
+			pinmux = <PINMUX_GPIO92__FUNC_GPIO92>;
+			output-low;
+		};
+
+		pins-cols {
+			pinmux = <PINMUX_GPIO93__FUNC_KPCOL0>,
+				 <PINMUX_GPIO94__FUNC_KPCOL1>;
+			input-enable;
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
+		};
+	};
+
 	mmc0_pins_default: mmc0-pins-default {
 		pins_cmd_dat {
 			pinmux = <PINMUX_GPIO123__FUNC_MSDC0_DAT0>,
