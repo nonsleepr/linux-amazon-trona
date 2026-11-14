@@ -49,6 +49,12 @@ enum phy_mode {
 	PHY_MODE_TBT,
 };
 
+/*
+ * Submode for PHY_MODE_USB_DEVICE: hand D+/D- over to an external BC1.2
+ * charger detector while it runs (submode 0 gives them back).
+ */
+#define PHY_USB_DEVICE_BC12_DETECT	1
+
 enum phy_media {
 	PHY_MEDIA_DEFAULT,
 	PHY_MEDIA_SR,

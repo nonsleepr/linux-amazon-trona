@@ -1463,8 +1463,20 @@ static int mtk_phy_set_mode(struct phy *phy, enum phy_mode mode, int submode)
 	struct mtk_phy_instance *instance = phy_get_drvdata(phy);
 	struct mtk_tphy *tphy = dev_get_drvdata(phy->dev.parent);
 
-	if (instance->type == PHY_TYPE_USB2)
+	if (instance->type == PHY_TYPE_USB2) {
 		u2_phy_instance_set_mode(tphy, instance, mode);
+
+		/*
+		 * Like MediaTek's Charger_Detect_Init(): with the transceiver
+		 * on the lines, an external BC1.2 detector (MT6370) can't
+		 * classify the port.
+		 */
+		if (mode == PHY_MODE_USB_DEVICE)
+			mtk_phy_update_bits(instance->u2_banks.com + U3P_USBPHYACR6,
+					    PA6_RG_U2_BC11_SW_EN,
+					    submode == PHY_USB_DEVICE_BC12_DETECT ?
+					    PA6_RG_U2_BC11_SW_EN : 0);
+	}
 
 	return 0;
 }

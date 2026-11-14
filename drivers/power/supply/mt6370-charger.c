@@ -16,6 +16,7 @@
 #include <linux/linear_range.h>
 #include <linux/module.h>
 #include <linux/of.h>
+#include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/power_supply.h>
 #include <linux/regmap.h>
@@ -108,6 +109,9 @@ struct mt6370_priv {
 	int attach;
 	int psy_usb_type;
 	bool pwr_rdy;
+	struct phy *usb_phy;
+	bool usb_phy_bc12;
+	struct delayed_work bc12_timeout_dwork;
 };
 
 enum mt6370_usb_status {
@@ -260,6 +264,42 @@ static int mt6370_chg_otg_of_parse_cb(struct device_node *of,
 				  MT6370_OTG_PIN_EN_MASK);
 }
 
+/*
+ * The SoC's USB PHY shares D+/D- with the charger; its transceiver has to
+ * be switched off the lines for the BC1.2 result to mean anything.
+ */
+static void mt6370_chg_usb_phy_bc12(struct mt6370_priv *priv, bool detect)
+{
+	if (!priv->usb_phy || priv->usb_phy_bc12 == detect)
+		return;
+
+	if (detect) {
+		if (phy_init(priv->usb_phy))
+			return;
+		phy_set_mode_ext(priv->usb_phy, PHY_MODE_USB_DEVICE,
+				 PHY_USB_DEVICE_BC12_DETECT);
+	} else {
+		phy_set_mode_ext(priv->usb_phy, PHY_MODE_USB_DEVICE, 0);
+		phy_exit(priv->usb_phy);
+	}
+
+	priv->usb_phy_bc12 = detect;
+}
+
+static void mt6370_chg_bc12_timeout_func(struct work_struct *work)
+{
+	struct mt6370_priv *priv = container_of(work, struct mt6370_priv,
+						bc12_timeout_dwork.work);
+
+	mutex_lock(&priv->attach_lock);
+	if (priv->attach == MT6370_ATTACH_STAT_ATTACH_WAIT_FOR_BC12) {
+		dev_warn(priv->dev, "BC1.2 detection timed out\n");
+		priv->attach = MT6370_ATTACH_STAT_ATTACH_BC12_DONE;
+		queue_work(priv->wq, &priv->bc12_work);
+	}
+	mutex_unlock(&priv->attach_lock);
+}
+
 static void mt6370_chg_bc12_work_func(struct work_struct *work)
 {
 	struct mt6370_priv *priv = container_of(work, struct mt6370_priv,
@@ -274,14 +314,22 @@ static void mt6370_chg_bc12_work_func(struct work_struct *work)
 	switch (attach) {
 	case MT6370_ATTACH_STAT_DETACH:
 		usb_stat = 0;
+		mt6370_chg_field_set(priv, F_USBCHGEN, 0);
+		mt6370_chg_usb_phy_bc12(priv, false);
 		break;
 	case MT6370_ATTACH_STAT_ATTACH_WAIT_FOR_BC12:
+		mt6370_chg_usb_phy_bc12(priv, true);
 		ret = mt6370_chg_field_set(priv, F_USBCHGEN, attach);
 		if (ret)
 			dev_err(priv->dev, "Failed to enable USB CHG EN\n");
+		/* Don't leave the PHY off the lines if "attach_i" never comes */
+		mod_delayed_work(system_wq, &priv->bc12_timeout_dwork, 2 * HZ);
 		goto bc12_work_func_out;
 	case MT6370_ATTACH_STAT_ATTACH_BC12_DONE:
 		ret = mt6370_chg_field_get(priv, F_USB_STAT, &usb_stat);
+		/* Detection is done: give the lines back to the USB PHY */
+		mt6370_chg_field_set(priv, F_USBCHGEN, 0);
+		mt6370_chg_usb_phy_bc12(priv, false);
 		if (ret) {
 			dev_err(priv->dev, "Failed to get USB status\n");
 			goto bc12_work_func_out;
@@ -918,6 +966,11 @@ static int mt6370_chg_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, priv);
 
+	priv->usb_phy = devm_phy_optional_get(dev, "usb");
+	if (IS_ERR(priv->usb_phy))
+		return dev_err_probe(dev, PTR_ERR(priv->usb_phy),
+				     "Failed to get USB PHY\n");
+
 	priv->iio_adcs = devm_iio_channel_get_all(priv->dev);
 	if (IS_ERR(priv->iio_adcs))
 		return dev_err_probe(dev, PTR_ERR(priv->iio_adcs),
@@ -944,6 +997,11 @@ static int mt6370_chg_probe(struct platform_device *pdev)
 	ret = devm_work_autocancel(dev, &priv->bc12_work, mt6370_chg_bc12_work_func);
 	if (ret)
 		return dev_err_probe(dev, ret, "Failed to init bc12 work\n");
+
+	ret = devm_delayed_work_autocancel(dev, &priv->bc12_timeout_dwork,
+					   mt6370_chg_bc12_timeout_func);
+	if (ret)
+		return ret;
 
 	ret = devm_delayed_work_autocancel(dev, &priv->mivr_dwork, mt6370_chg_mivr_dwork_func);
 	if (ret)
