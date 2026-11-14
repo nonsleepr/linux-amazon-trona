@@ -69,6 +69,17 @@ config MTK_MMSYS
 	  Say yes here to add support for the MediaTek Multimedia
 	  Subsystem (MMSYS).
 
+config MT8183_MCDI
+	bool "MediaTek MT8183 MCDI setup for the vendor TF-A"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on HOTPLUG_CPU && OF
+	help
+	  On MT8183 devices running MediaTek's vendor TF-A (rather than
+	  Chromebook TF-A), CPU power-down idle states only work once the
+	  kernel has told the MCDI controller on the SSPM which CPUs are
+	  available. Say Y for such devices; it only acts on a
+	  "mediatek,mt8183-mcdi-mbox" node that is enabled in the DT.
+
 config MTK_SVS
 	tristate "MediaTek Smart Voltage Scaling(SVS)"
 	depends on NVMEM_MTK_EFUSE && NVMEM
