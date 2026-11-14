@@ -732,6 +732,14 @@ static int mtk_dsi_poweron(struct mtk_dsi *dsi)
 
 	mtk_dsi_enable(dsi);
 
+	/*
+	 * The bootloader may hand over with video mode still running. Start
+	 * from command mode, as mtk_dsi_poweroff() leaves it, so the first
+	 * transfer doesn't wait for a VM_DONE from the engine reset below.
+	 */
+	mtk_dsi_stop(dsi);
+	mtk_dsi_set_cmd_mode(dsi);
+
 	if (dsi->driver_data->has_shadow_ctl)
 		writel(FORCE_COMMIT | BYPASS_SHADOW,
 		       dsi->regs + dsi->driver_data->reg_shadow_dbg_off);
