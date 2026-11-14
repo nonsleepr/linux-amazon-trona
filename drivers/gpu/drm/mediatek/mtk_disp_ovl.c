@@ -165,6 +165,7 @@ struct mtk_disp_ovl {
 	const struct mtk_disp_ovl_data	*data;
 	void				(*vblank_cb)(void *data);
 	void				*vblank_cb_data;
+	int				irq;
 };
 
 static irqreturn_t mtk_disp_ovl_irq_handler(int irq, void *dev_id)
@@ -206,6 +207,7 @@ void mtk_ovl_enable_vblank(struct device *dev)
 
 	writel(0x0, ovl->regs + DISP_REG_OVL_INTSTA);
 	writel_relaxed(OVL_FME_CPL_INT, ovl->regs + DISP_REG_OVL_INTEN);
+	enable_irq(ovl->irq);
 }
 
 void mtk_ovl_disable_vblank(struct device *dev)
@@ -213,6 +215,7 @@ void mtk_ovl_disable_vblank(struct device *dev)
 	struct mtk_disp_ovl *ovl = dev_get_drvdata(dev);
 
 	writel_relaxed(0x0, ovl->regs + DISP_REG_OVL_INTEN);
+	disable_irq_nosync(ovl->irq);
 }
 
 u32 mtk_ovl_get_blend_modes(struct device *dev)
@@ -640,8 +643,14 @@ static int mtk_disp_ovl_probe(struct platform_device *pdev)
 	priv->data = of_device_get_match_data(dev);
 	platform_set_drvdata(pdev, priv);
 
+	/*
+	 * Only taken while vblank is enabled: a bootloader can leave this
+	 * OVL scanning out with its interrupts enabled.
+	 */
+	priv->irq = irq;
 	ret = devm_request_irq(dev, irq, mtk_disp_ovl_irq_handler,
-			       IRQF_TRIGGER_NONE, dev_name(dev), priv);
+			       IRQF_TRIGGER_NONE | IRQF_NO_AUTOEN,
+			       dev_name(dev), priv);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to request irq %d\n", irq);
 

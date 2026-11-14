@@ -86,6 +86,7 @@ struct mtk_disp_rdma {
 	void				(*vblank_cb)(void *data);
 	void				*vblank_cb_data;
 	u32				fifo_size;
+	int				irq;
 };
 
 static irqreturn_t mtk_disp_rdma_irq_handler(int irq, void *dev_id)
@@ -133,13 +134,20 @@ void mtk_rdma_unregister_vblank_cb(struct device *dev)
 
 void mtk_rdma_enable_vblank(struct device *dev)
 {
-	rdma_update_bits(dev, DISP_REG_RDMA_INT_ENABLE, RDMA_FRAME_END_INT,
-			 RDMA_FRAME_END_INT);
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+
+	/* Nothing else is handled; drop whatever a bootloader enabled. */
+	writel(0x0, rdma->regs + DISP_REG_RDMA_INT_STATUS);
+	writel(RDMA_FRAME_END_INT, rdma->regs + DISP_REG_RDMA_INT_ENABLE);
+	enable_irq(rdma->irq);
 }
 
 void mtk_rdma_disable_vblank(struct device *dev)
 {
-	rdma_update_bits(dev, DISP_REG_RDMA_INT_ENABLE, RDMA_FRAME_END_INT, 0);
+	struct mtk_disp_rdma *rdma = dev_get_drvdata(dev);
+
+	writel(0x0, rdma->regs + DISP_REG_RDMA_INT_ENABLE);
+	disable_irq_nosync(rdma->irq);
 }
 
 const u32 *mtk_rdma_get_formats(struct device *dev)
@@ -349,8 +357,14 @@ static int mtk_disp_rdma_probe(struct platform_device *pdev)
 	writel(0x0, priv->regs + DISP_REG_RDMA_INT_ENABLE);
 	writel(0x0, priv->regs + DISP_REG_RDMA_INT_STATUS);
 
+	/*
+	 * Only taken while vblank is enabled: a bootloader can leave this
+	 * RDMA scanning out with its interrupts enabled.
+	 */
+	priv->irq = irq;
 	ret = devm_request_irq(dev, irq, mtk_disp_rdma_irq_handler,
-			       IRQF_TRIGGER_NONE, dev_name(dev), priv);
+			       IRQF_TRIGGER_NONE | IRQF_NO_AUTOEN,
+			       dev_name(dev), priv);
 	if (ret < 0)
 		return dev_err_probe(dev, ret, "Failed to request irq %d\n", irq);
 
