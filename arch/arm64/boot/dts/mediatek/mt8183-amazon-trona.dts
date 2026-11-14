@@ -286,6 +286,19 @@
 	status = "okay";
 };
 
+/*
+ * Cluster power-down needs a "cluster may power off" handshake with the
+ * MCDI controller on every entry, which cpuidle-psci has no hook for. Only
+ * the per-CPU power-down state is usable.
+ */
+&CLUSTER_SLEEP0 {
+	status = "disabled";
+};
+
+&CLUSTER_SLEEP1 {
+	status = "disabled";
+};
+
 &cci {
 	proc-supply = <&mt6358_vproc12_reg>;
 };
@@ -702,13 +715,12 @@
 /*
  * SSPM mailbox 3: the MCDI controller that powers CPUs down for PSCI idle
  * states. The vendor TF-A needs the kernel to set it up, or a CPU entering
- * a power-down idle state hangs the system. Off until that is tested.
+ * a power-down idle state hangs the system.
  */
 &{/soc} {
 	mcdi_mbox: mailbox@10480000 {
 		compatible = "mediatek,mt8183-mcdi-mbox";
 		reg = <0 0x10480000 0 0x40>;
-		status = "disabled";
 	};
 };
 
