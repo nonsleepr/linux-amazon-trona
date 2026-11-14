@@ -111,6 +111,9 @@
 
 #define U3P_U2PHYDTM1		0x06C
 #define P2C_RG_UART_EN			BIT(16)
+#define P2C_FORCE_VBUSVALID		BIT(13)
+#define P2C_FORCE_SESSEND		BIT(12)
+#define P2C_FORCE_AVALID		BIT(10)
 #define P2C_FORCE_IDDIG		BIT(9)
 #define P2C_RG_VBUSVALID		BIT(5)
 #define P2C_RG_SESSEND			BIT(4)
@@ -333,6 +336,7 @@ struct mtk_phy_instance {
 	int discth;
 	int pre_emphasis;
 	bool bc12_en;
+	bool force_vbus;
 	bool type_force_mode;
 };
 
@@ -874,6 +878,14 @@ static void u2_phy_instance_power_on(struct mtk_tphy *tphy,
 	/* OTG Enable */
 	mtk_phy_set_bits(com + U3P_USBPHYACR6, PA6_RG_U2_OTG_VBUSCMP_EN);
 
+	/*
+	 * Boards that sense VBUS with an external charger instead of the
+	 * PHY comparator: make the session valid/end values below the ones
+	 * the controller sees.
+	 */
+	if (instance->force_vbus)
+		mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_FORCE_VBUSVALID |
+				 P2C_FORCE_AVALID | P2C_FORCE_SESSEND);
 	mtk_phy_set_bits(com + U3P_U2PHYDTM1, P2C_RG_VBUSVALID | P2C_RG_AVALID);
 
 	mtk_phy_clear_bits(com + U3P_U2PHYDTM1, P2C_RG_SESSEND);
@@ -1133,6 +1145,7 @@ static void phy_parse_property(struct mtk_tphy *tphy,
 		return;
 
 	instance->bc12_en = device_property_read_bool(dev, "mediatek,bc12");
+	instance->force_vbus = device_property_read_bool(dev, "mediatek,force-vbus");
 	device_property_read_u32(dev, "mediatek,eye-src",
 				 &instance->eye_src);
 	device_property_read_u32(dev, "mediatek,eye-vrt",
