@@ -2,10 +2,10 @@
 /*
  * Amazon Fire HD 10 (11th Gen, 2021) - "trona"
  *
- * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU and the display
- * left running by LK exposed as a simple-framebuffer. The FT8201 panel,
- * touch, MT6370 (charger/backlight/Type-C), audio and WiFi are not
- * described yet.
+ * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU, touchscreen, the
+ * MT6370 backlight and the display left running by LK exposed as a
+ * simple-framebuffer. The DSI panel path, the rest of the MT6370
+ * (charger/Type-C), audio and WiFi are not described yet.
  */
 
 /dts-v1/;
@@ -147,6 +147,32 @@
 	};
 
 	/*
+	 * Bring-up only: LK leaves these MT6358 LDOs on and nothing claims
+	 * them. Holding them here keeps the unused-regulator cleanup off
+	 * them, and each can be switched off from sysfs ("state") to find
+	 * out which one the system actually depends on.
+	 */
+	output-vaud28 {
+		compatible = "regulator-output";
+		vout-supply = <&mt6358_vaud28_reg>;
+	};
+
+	output-vaux18 {
+		compatible = "regulator-output";
+		vout-supply = <&mt6358_vaux18_reg>;
+	};
+
+	output-vbif28 {
+		compatible = "regulator-output";
+		vout-supply = <&mt6358_vbif28_reg>;
+	};
+
+	output-vio28 {
+		compatible = "regulator-output";
+		vout-supply = <&mt6358_vio28_reg>;
+	};
+
+	/*
 	 * Not used by Linux. Amazon's LK only turns the MT6370 backlight on
 	 * (at the IDME bl_level) when it finds this vendor node at
 	 * /odm/led@6; without it the panel is initialised but stays dark.
@@ -213,14 +239,36 @@
 	mali-supply = <&mt6358_vgpu_reg>;
 };
 
+&i2c0 {
+	clock-frequency = <400000>;
+	status = "okay";
+
+	/*
+	 * Touch half of the FT8201AB in-cell panel controller. Its reset
+	 * (GPIO2) is sequenced together with the panel's, so it belongs to
+	 * the panel; touch only works while the panel is powered.
+	 */
+	touchscreen@38 {
+		compatible = "focaltech,ft8201";
+		reg = <0x38>;
+		interrupts-extended = <&pio 1 IRQ_TYPE_EDGE_FALLING>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&touchscreen_pins>;
+		vcc-supply = <&mt6358_vldo28_reg>;
+		iovcc-supply = <&mt6358_vrf18_reg>;
+		touchscreen-size-x = <1200>;
+		touchscreen-size-y = <1920>;
+	};
+};
+
 /*
  * MT6370 sub-PMIC ("i2c5" in Amazon's tree). Only the backlight is driven
  * for now: Amazon's LK leaves the BLED in PWM-dimming mode with nothing
  * feeding the PWM input, so the panel stays dark. The driver switches it
  * to I2C dimming. Settings mirror the vendor bled node (4 channels,
- * OVP 29 V, OCP 1.5 A, brightness capped at 1370). The DSV rails biasing
- * the panel come from this chip too; the regulator cell gets no
- * constraints from DT and so leaves them as LK set them.
+ * OVP 29 V, OCP 1.5 A, brightness capped at 1370). The display bias
+ * rails (AVDD/AVEE) for the panel come from this chip too, at the
+ * vendor's +-6.0 V off a 6.2 V boost.
  */
 &i2c11 {
 	clock-frequency = <400000>;
@@ -230,11 +278,18 @@
 		compatible = "mediatek,mt6370";
 		reg = <0x34>;
 		interrupts-extended = <&pio 10 IRQ_TYPE_LEVEL_LOW>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&mt6370_pins>;
 		interrupt-controller;
 		#interrupt-cells = <1>;
 		wakeup-source;
 
-		backlight {
+		adc {
+			compatible = "mediatek,mt6370-adc";
+			#io-channel-cells = <1>;
+		};
+
+		backlight: backlight {
 			compatible = "mediatek,mt6370-backlight";
 			mediatek,bled-channel-use = /bits/ 8 <15>;
 			mediatek,bled-ovp-microvolt = <29000000>;
@@ -257,6 +312,26 @@
 		indicator {
 			compatible = "mediatek,mt6370-indicator";
 			status = "disabled";
+		};
+
+		regulators {
+			dsvbst {
+				regulator-name = "lcd_bias_boost";
+				regulator-min-microvolt = <6200000>;
+				regulator-max-microvolt = <6200000>;
+			};
+
+			lcd_avdd: dsvpos {
+				regulator-name = "lcd_avdd";
+				regulator-min-microvolt = <6000000>;
+				regulator-max-microvolt = <6000000>;
+			};
+
+			lcd_avee: dsvneg {
+				regulator-name = "lcd_avee";
+				regulator-min-microvolt = <6000000>;
+				regulator-max-microvolt = <6000000>;
+			};
 		};
 
 		tcpc {
@@ -448,15 +523,52 @@
 			mediatek,pull-up-adv = <01>;
 		};
 	};
+
+	/*
+	 * IRQB is open-drain. The board's GPIO table wants the SoC pull-up
+	 * here, but the pin arrives pulled down, which holds the level IRQ
+	 * asserted until the core shuts it off as spurious.
+	 */
+	mt6370_pins: mt6370-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO10__FUNC_GPIO10>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
+	touchscreen_pins: touchscreen-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO1__FUNC_GPIO1>;
+			input-enable;
+			bias-disable;
+		};
+	};
 };
 
 &pmic {
 	interrupts-extended = <&pio 182 IRQ_TYPE_LEVEL_HIGH>;
 };
 
-/* SCP (needed for the video codecs) is unused for now; no carve-out yet. */
+/*
+ * The SCP stays disabled (as in mt8183.dtsi) until it has a carve-out and
+ * firmware. The video codecs and MDP3 can't work without it, and their
+ * drivers WARN when they can't find it, so keep them off too.
+ */
 &scp {
 	/delete-property/ memory-region;
+};
+
+&{/soc/dma-controller0@14001000} {
+	status = "disabled";
+};
+
+&vcodec_dec {
+	status = "disabled";
+};
+
+&vcodec_enc {
+	status = "disabled";
 };
 
 /*
@@ -473,6 +585,15 @@
 	mediatek,u3p-dis-msk = <1>;
 	vusb33-supply = <&mt6358_vusb_reg>;
 	status = "okay";
+};
+
+/*
+ * mtk-svs reads the SVS calibration words from the efuse as blank and fails
+ * to probe. The vendor EEM driver gets them from the preloader's devinfo
+ * copy instead; off until that's understood.
+ */
+&svs {
+	status = "disabled";
 };
 
 /*
