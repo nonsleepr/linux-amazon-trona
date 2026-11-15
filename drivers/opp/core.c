@@ -2955,6 +2955,15 @@ int dev_pm_opp_adjust_voltage(struct device *dev, unsigned long freq,
 				opp->supplies->u_volt_min = u_volt_min;
 				opp->supplies->u_volt_max = u_volt_max;
 
+				/*
+				 * The device may be running at this OPP: have
+				 * the next dev_pm_opp_set_rate() to it apply
+				 * the new voltage instead of skipping it as
+				 * unchanged.
+				 */
+				if (opp == opp_table->current_opp)
+					opp_table->current_rate_single_clk = 0;
+
 				break;
 			}
 		}
