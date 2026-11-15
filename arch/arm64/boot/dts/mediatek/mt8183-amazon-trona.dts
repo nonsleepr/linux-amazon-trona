@@ -176,6 +176,11 @@
 		#address-cells = <1>;
 		#size-cells = <1>;
 
+		/* devinfo[50..68]: the SVS words at efuse 0x580..0x5c8 */
+		lk_svs_calibration: svs-calibration@c8 {
+			reg = <0xc8 0x4c>;
+		};
+
 		/* devinfo[100..102]: the efuse words at 0x180..0x188 */
 		lk_thermal_calibration: thermal-calibration@190 {
 			reg = <0x190 0xc>;
@@ -737,13 +742,10 @@
 	status = "okay";
 };
 
-/*
- * mtk-svs reads the SVS calibration words from the efuse as blank and fails
- * to probe. The vendor EEM driver gets them from the preloader's devinfo
- * copy instead; off until that's understood.
- */
+/* The efuse reads as blank; take the calibration from LK's devinfo copy */
 &svs {
-	status = "disabled";
+	nvmem-cells = <&lk_svs_calibration>, <&lk_thermal_calibration>;
+	nvmem-cell-names = "svs-calibration-data", "t-calibration-data";
 };
 
 /*
