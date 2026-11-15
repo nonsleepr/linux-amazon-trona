@@ -10,6 +10,7 @@
 
 #include <drm/drm_device.h>
 #include <drm/drm_gem_shmem_helper.h>
+#include <drm/drm_print.h>
 
 #include "panfrost_device.h"
 #include "panfrost_gem.h"
@@ -84,7 +85,7 @@ panfrost_gem_shrinker_scan(struct shrinker *shrinker, struct shrink_control *sc)
 	mutex_unlock(&pfdev->shrinker_lock);
 
 	if (freed > 0)
-		pr_info_ratelimited("Purging %lu bytes\n", freed << PAGE_SHIFT);
+		drm_dbg_driver(&pfdev->base, "Purging %lu bytes\n", freed << PAGE_SHIFT);
 
 	return freed;
 }
