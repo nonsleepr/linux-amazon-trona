@@ -669,6 +669,14 @@
 		monitored-battery = <&battery>;
 		power-supplies = <&mt6370_charger>;
 	};
+
+	/*
+	 * The vendor TF-A doesn't power the PMIC off for PSCI SYSTEM_OFF; the
+	 * kernel has to. With a cable in, the PMIC powers right back on.
+	 */
+	power-controller {
+		compatible = "mediatek,mt6358-pwrc";
+	};
 };
 
 &rdma1 {
