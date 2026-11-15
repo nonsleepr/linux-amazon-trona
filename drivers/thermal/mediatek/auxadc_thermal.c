@@ -308,6 +308,13 @@ struct mtk_thermal_bank {
 	int id;
 };
 
+/* A single sensor, for the per-sensor zones (thermal sensor ID 1 and up) */
+struct mtk_thermal_sensor {
+	struct mtk_thermal *mt;
+	int bank;
+	int index;
+};
+
 struct mtk_thermal_data {
 	s32 num_banks;
 	s32 num_sensors;
@@ -866,6 +873,68 @@ static int mtk_read_temp(struct thermal_zone_device *tz, int *temperature)
 	return 0;
 }
 
+static int mtk_read_sensor_temp(struct thermal_zone_device *tz, int *temperature)
+{
+	struct mtk_thermal_sensor *sensor = thermal_zone_device_priv(tz);
+	struct mtk_thermal *mt = sensor->mt;
+	const struct mtk_thermal_data *conf = mt->conf;
+	struct mtk_thermal_bank *bank = &mt->banks[sensor->bank];
+	int temp;
+
+	mtk_thermal_get_bank(bank);
+	temp = mt->raw_to_mcelsius(mt, conf->bank_data[sensor->bank].sensors[sensor->index],
+				   readl(mt->thermal_base + conf->msr[sensor->index]));
+	mtk_thermal_put_bank(bank);
+
+	/* Same filter as for the bank maximum; the core skips -EAGAIN quietly */
+	if (!mtk_thermal_temp_is_valid(temp))
+		return -EAGAIN;
+
+	*temperature = temp;
+
+	return 0;
+}
+
+static const struct thermal_zone_device_ops mtk_thermal_sensor_ops = {
+	.get_temp = mtk_read_sensor_temp,
+};
+
+/*
+ * Sensor ID 0 is the maximum over all sensors. IDs from 1 on are the
+ * individual sensors, bank by bank, for the zones that the DT describes
+ * (SVS looks up the GPU and CPU ones by name).
+ */
+static int mtk_thermal_register_sensor_zones(struct mtk_thermal *mt)
+{
+	const struct mtk_thermal_data *conf = mt->conf;
+	struct mtk_thermal_sensor *sensor;
+	struct thermal_zone_device *tzdev;
+	int b, i, id = 1;
+
+	for (b = 0; b < conf->num_banks; b++) {
+		for (i = 0; i < conf->bank_data[b].num_sensors; i++, id++) {
+			sensor = devm_kzalloc(mt->dev, sizeof(*sensor), GFP_KERNEL);
+			if (!sensor)
+				return -ENOMEM;
+
+			sensor->mt = mt;
+			sensor->bank = b;
+			sensor->index = i;
+
+			tzdev = devm_thermal_of_zone_register(mt->dev, id, sensor,
+							      &mtk_thermal_sensor_ops);
+			if (IS_ERR(tzdev)) {
+				if (PTR_ERR(tzdev) != -ENODEV)
+					dev_warn(mt->dev, "sensor %d zone: %pe\n",
+						 id, tzdev);
+				devm_kfree(mt->dev, sensor);
+			}
+		}
+	}
+
+	return 0;
+}
+
 static const struct thermal_zone_device_ops mtk_thermal_ops = {
 	.get_temp = mtk_read_temp,
 };
@@ -1294,7 +1363,7 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	if (ret)
 		dev_warn(&pdev->dev, "error in thermal_add_hwmon_sysfs");
 
-	return 0;
+	return mtk_thermal_register_sensor_zones(mt);
 }
 
 static struct platform_driver mtk_thermal_driver = {
