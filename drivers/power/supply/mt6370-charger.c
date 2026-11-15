@@ -111,6 +111,7 @@ struct mt6370_priv {
 	bool pwr_rdy;
 	struct phy *usb_phy;
 	bool usb_phy_bc12;
+	bool bc12_running;
 	struct delayed_work bc12_timeout_dwork;
 };
 
@@ -292,7 +293,7 @@ static void mt6370_chg_bc12_timeout_func(struct work_struct *work)
 						bc12_timeout_dwork.work);
 
 	mutex_lock(&priv->attach_lock);
-	if (priv->attach == MT6370_ATTACH_STAT_ATTACH_WAIT_FOR_BC12) {
+	if (priv->bc12_running) {
 		dev_warn(priv->dev, "BC1.2 detection timed out\n");
 		priv->attach = MT6370_ATTACH_STAT_ATTACH_BC12_DONE;
 		queue_work(priv->wq, &priv->bc12_work);
@@ -314,6 +315,7 @@ static void mt6370_chg_bc12_work_func(struct work_struct *work)
 	switch (attach) {
 	case MT6370_ATTACH_STAT_DETACH:
 		usb_stat = 0;
+		priv->bc12_running = false;
 		mt6370_chg_field_set(priv, F_USBCHGEN, 0);
 		mt6370_chg_usb_phy_bc12(priv, false);
 		break;
@@ -322,10 +324,12 @@ static void mt6370_chg_bc12_work_func(struct work_struct *work)
 		ret = mt6370_chg_field_set(priv, F_USBCHGEN, attach);
 		if (ret)
 			dev_err(priv->dev, "Failed to enable USB CHG EN\n");
+		priv->bc12_running = true;
 		/* Don't leave the PHY off the lines if "attach_i" never comes */
-		mod_delayed_work(system_wq, &priv->bc12_timeout_dwork, 2 * HZ);
+		mod_delayed_work(priv->wq, &priv->bc12_timeout_dwork, 2 * HZ);
 		goto bc12_work_func_out;
 	case MT6370_ATTACH_STAT_ATTACH_BC12_DONE:
+		priv->bc12_running = false;
 		ret = mt6370_chg_field_get(priv, F_USB_STAT, &usb_stat);
 		/* Detection is done: give the lines back to the USB PHY */
 		mt6370_chg_field_set(priv, F_USBCHGEN, 0);
@@ -878,7 +882,17 @@ static irqreturn_t mt6370_attach_i_handler(int irq, void *data)
 	if (otg_en)
 		return IRQ_HANDLED;
 
+	/*
+	 * Only a detection started here counts: the bootloader runs BC1.2
+	 * too, and its "attach_i" is still latched when the IRQ is requested.
+	 * Taken as done, that one would read USB_STAT before detection ever
+	 * ran and leave the port unknown.
+	 */
 	mutex_lock(&priv->attach_lock);
+	if (!priv->bc12_running) {
+		mutex_unlock(&priv->attach_lock);
+		return IRQ_HANDLED;
+	}
 	priv->attach = MT6370_ATTACH_STAT_ATTACH_BC12_DONE;
 	mutex_unlock(&priv->attach_lock);
 
