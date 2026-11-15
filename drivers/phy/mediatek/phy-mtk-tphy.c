@@ -338,6 +338,7 @@ struct mtk_phy_instance {
 	bool bc12_en;
 	bool force_session_end;
 	bool type_force_mode;
+	bool debugfs_created;
 };
 
 struct mtk_tphy {
@@ -1535,7 +1536,12 @@ static struct phy *mtk_phy_xlate(struct device *dev,
 
 	phy_parse_property(tphy, instance);
 	phy_type_set(instance);
-	phy_debugfs_init(instance);
+
+	/* xlate runs for every consumer; the files live as long as the PHY */
+	if (!instance->debugfs_created) {
+		phy_debugfs_init(instance);
+		instance->debugfs_created = true;
+	}
 
 	return instance->phy;
 }
