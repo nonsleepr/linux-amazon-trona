@@ -271,19 +271,6 @@
 	status = "okay";
 };
 
-/*
- * Cluster power-down needs a "cluster may power off" handshake with the
- * MCDI controller on every entry, which cpuidle-psci has no hook for. Only
- * the per-CPU power-down state is usable.
- */
-&CLUSTER_SLEEP0 {
-	status = "disabled";
-};
-
-&CLUSTER_SLEEP1 {
-	status = "disabled";
-};
-
 &cci {
 	proc-supply = <&mt6358_vproc12_reg>;
 };
