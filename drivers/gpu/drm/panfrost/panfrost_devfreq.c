@@ -214,6 +214,14 @@ int panfrost_devfreq_init(struct panfrost_device *pfdev)
 	}
 	pfdevfreq->devfreq = devfreq;
 
+	/*
+	 * Follow OPP changes made by others (MediaTek SVS disables OPPs and
+	 * adjusts their voltages) instead of only at the next DVFS step.
+	 */
+	ret = devm_devfreq_register_opp_notifier(dev, devfreq);
+	if (ret)
+		DRM_DEV_INFO(dev, "Couldn't register OPP notifier: %d\n", ret);
+
 	cooling = devfreq_cooling_em_register(devfreq, NULL);
 	if (IS_ERR(cooling))
 		DRM_DEV_INFO(dev, "Failed to register cooling device\n");
