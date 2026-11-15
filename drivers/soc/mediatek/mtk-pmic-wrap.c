@@ -1444,13 +1444,22 @@ static bool pwrap_is_fsm_idle_and_sync_idle(struct pmic_wrapper *wrp)
 		(val & PWRAP_STATE_SYNC_IDLE0);
 }
 
+/*
+ * Power-off and restart handlers reach the PMIC with interrupts off; don't
+ * sleep while waiting for the wrapper then.
+ */
+#define pwrap_poll(fn, wrp, tmp, cond, delay_us, timeout_us)		\
+	(irqs_disabled() ?							\
+	 readx_poll_timeout_atomic(fn, wrp, tmp, cond, delay_us, timeout_us) :\
+	 readx_poll_timeout(fn, wrp, tmp, cond, delay_us, timeout_us))
+
 static int pwrap_read16(struct pmic_wrapper *wrp, u32 adr, u32 *rdata)
 {
 	bool tmp;
 	int ret;
 	u32 val;
 
-	ret = readx_poll_timeout(pwrap_is_fsm_idle, wrp, tmp, tmp,
+	ret = pwrap_poll(pwrap_is_fsm_idle, wrp, tmp, tmp,
 				 PWRAP_POLL_DELAY_US, PWRAP_POLL_TIMEOUT_US);
 	if (ret) {
 		pwrap_leave_fsm_vldclr(wrp);
@@ -1463,7 +1472,7 @@ static int pwrap_read16(struct pmic_wrapper *wrp, u32 adr, u32 *rdata)
 		val = (adr >> 1) << 16;
 	pwrap_writel(wrp, val, PWRAP_WACS2_CMD);
 
-	ret = readx_poll_timeout(pwrap_is_fsm_vldclr, wrp, tmp, tmp,
+	ret = pwrap_poll(pwrap_is_fsm_vldclr, wrp, tmp, tmp,
 				 PWRAP_POLL_DELAY_US, PWRAP_POLL_TIMEOUT_US);
 	if (ret)
 		return ret;
@@ -1486,7 +1495,7 @@ static int pwrap_read32(struct pmic_wrapper *wrp, u32 adr, u32 *rdata)
 
 	*rdata = 0;
 	for (msb = 0; msb < 2; msb++) {
-		ret = readx_poll_timeout(pwrap_is_fsm_idle, wrp, tmp, tmp,
+		ret = pwrap_poll(pwrap_is_fsm_idle, wrp, tmp, tmp,
 					 PWRAP_POLL_DELAY_US, PWRAP_POLL_TIMEOUT_US);
 
 		if (ret) {
@@ -1497,7 +1506,7 @@ static int pwrap_read32(struct pmic_wrapper *wrp, u32 adr, u32 *rdata)
 		pwrap_writel(wrp, ((msb << 30) | (adr << 16)),
 			     PWRAP_WACS2_CMD);
 
-		ret = readx_poll_timeout(pwrap_is_fsm_vldclr, wrp, tmp, tmp,
+		ret = pwrap_poll(pwrap_is_fsm_vldclr, wrp, tmp, tmp,
 					 PWRAP_POLL_DELAY_US, PWRAP_POLL_TIMEOUT_US);
 		if (ret)
 			return ret;
@@ -1521,7 +1530,7 @@ static int pwrap_write16(struct pmic_wrapper *wrp, u32 adr, u32 wdata)
 	bool tmp;
 	int ret;
 
-	ret = readx_poll_timeout(pwrap_is_fsm_idle, wrp, tmp, tmp,
+	ret = pwrap_poll(pwrap_is_fsm_idle, wrp, tmp, tmp,
 				 PWRAP_POLL_DELAY_US, PWRAP_POLL_TIMEOUT_US);
 	if (ret) {
 		pwrap_leave_fsm_vldclr(wrp);
@@ -1545,7 +1554,7 @@ static int pwrap_write32(struct pmic_wrapper *wrp, u32 adr, u32 wdata)
 	int ret, msb, rdata;
 
 	for (msb = 0; msb < 2; msb++) {
-		ret = readx_poll_timeout(pwrap_is_fsm_idle, wrp, tmp, tmp,
+		ret = pwrap_poll(pwrap_is_fsm_idle, wrp, tmp, tmp,
 					 PWRAP_POLL_DELAY_US, PWRAP_POLL_TIMEOUT_US);
 		if (ret) {
 			pwrap_leave_fsm_vldclr(wrp);
