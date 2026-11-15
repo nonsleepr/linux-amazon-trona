@@ -13,9 +13,16 @@
  * Do what MediaTek's kernel driver does for CPU power-down: publish the
  * online CPUs (and clear the isolation and buck-off masks) before cpuidle
  * starts, and keep CPUs out of power-down idle states while a CPU is
- * brought up or taken down. Cluster power-down also needs a per-entry
- * "cluster may power off" handshake that cpuidle-psci has no hook for, so
- * only CPU-level power-down states can be used with this.
+ * brought up or taken down.
+ *
+ * Cluster power-down needs one more thing from the kernel: the last CPU of
+ * a cluster to go idle tells the controller that the cluster may power off
+ * ("CAN_POWER_OFF"). TF-A still only prepares the cluster, and flags that
+ * to the controller, when PSCI coordination has every CPU of the cluster
+ * asking for the cluster state. cpuidle-psci has no hook for that, so the
+ * cluster states' enter callbacks are wrapped here once they exist. Until
+ * then a latency limit keeps CPUs out of them. They start disabled (from
+ * sysfs, per CPU) unless mt8183_mcdi.cluster_off=1 is given.
  *
  * With every CPU powered down in suspend-to-idle only some wake sources get
  * through (the power key does, the RTC alarm doesn't), so power-down states
@@ -33,22 +40,40 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/pm_qos.h>
+#include <linux/string.h>
 #include <linux/suspend.h>
+#include <linux/topology.h>
 
 /* Mailbox slots, 32 bits each */
+#define MCDI_CLUSTER_CAN_POWER_OFF(c)	((0 + (c)) * 4)
 #define MCDI_BUCK_POWER_OFF_MASK	(2 * 4)
 #define MCDI_AVAIL_CPU_MASK		(7 * 4)
 #define MCDI_CPU_CLUSTER_PWR_STAT	(8 * 4)
 #define MCDI_CPU_ISOLATION_MASK		(12 * 4)
 
 #define MCDI_NR_CPUS			8
+#define MCDI_NR_CLUSTERS		2
 #define MCDI_CPUS_OFF			GENMASK(MCDI_NR_CPUS - 1, 0)
+
+/* Between CPU (200 us) and cluster (400 us) exit latency */
+#define MCDI_NO_CLUSTER_LATENCY_US	300
 
 static void __iomem *mcdi_mbox;
 static struct pm_qos_request mcdi_qos;
+static struct pm_qos_request mcdi_boot_qos;
+
+static bool cluster_off;
+module_param(cluster_off, bool, 0444);
+MODULE_PARM_DESC(cluster_off, "Enable the cluster power-down idle states at boot");
+
+static int mcdi_cluster_of[MCDI_NR_CPUS];
+static atomic_t mcdi_cluster_idle[MCDI_NR_CLUSTERS];
+static int (*mcdi_psci_enter)(struct cpuidle_device *dev,
+			      struct cpuidle_driver *drv, int idx);
 
 static void mcdi_publish_online_cpus(void)
 {
@@ -118,6 +143,63 @@ static void mcdi_power_down_states(bool enable)
 	}
 }
 
+static int __cpuidle mcdi_enter_cluster_state(struct cpuidle_device *dev,
+					      struct cpuidle_driver *drv, int idx)
+{
+	int cluster = mcdi_cluster_of[dev->cpu];
+	atomic_t *idle = &mcdi_cluster_idle[cluster];
+	int ret;
+
+	/* The last CPU of the cluster in lets the controller power it off */
+	if (atomic_inc_return(idle) ==
+	    cpumask_weight_and(cpu_online_mask, topology_cluster_cpumask(dev->cpu)))
+		writel(1, mcdi_mbox + MCDI_CLUSTER_CAN_POWER_OFF(cluster));
+
+	ret = mcdi_psci_enter(dev, drv, idx);
+
+	atomic_dec(idle);
+
+	return ret;
+}
+
+/* Wrap the cluster states of one CPU's cpuidle driver */
+static int mcdi_hook_cluster_states(unsigned int cpu)
+{
+	struct cpuidle_device *dev = per_cpu(cpuidle_devices, cpu);
+	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
+	int cluster = topology_cluster_id(cpu);
+	int i, n = 0;
+
+	if (!dev || !drv || cpu >= MCDI_NR_CPUS ||
+	    cluster < 0 || cluster >= MCDI_NR_CLUSTERS)
+		return 0;
+
+	mcdi_cluster_of[cpu] = cluster;
+
+	for (i = 1; i < drv->state_count; i++) {
+		struct cpuidle_state *state = &drv->states[i];
+
+		if (!strstarts(state->name, "cluster-"))
+			continue;
+
+		if (state->enter != mcdi_enter_cluster_state) {
+			if (mcdi_psci_enter && state->enter != mcdi_psci_enter) {
+				pr_warn("CPU%u %s: unexpected enter callback\n",
+					cpu, state->name);
+				continue;
+			}
+			mcdi_psci_enter = state->enter;
+			WRITE_ONCE(state->enter, mcdi_enter_cluster_state);
+		}
+
+		if (!cluster_off)
+			dev->states_usage[i].disable |= CPUIDLE_STATE_DISABLED_BY_USER;
+		n++;
+	}
+
+	return n;
+}
+
 static int mcdi_pm_notifier(struct notifier_block *nb, unsigned long action,
 			    void *data)
 {
@@ -160,6 +242,8 @@ static int __init mt8183_mcdi_init(void)
 		return -ENOMEM;
 
 	cpu_latency_qos_add_request(&mcdi_qos, PM_QOS_DEFAULT_VALUE);
+	/* No cluster states until their enter callbacks are wrapped */
+	cpu_latency_qos_add_request(&mcdi_boot_qos, MCDI_NO_CLUSTER_LATENCY_US);
 
 	cpus_read_lock();
 	writel(0, mcdi_mbox + MCDI_CPU_ISOLATION_MASK);
@@ -187,3 +271,24 @@ static int __init mt8183_mcdi_init(void)
 	return 0;
 }
 subsys_initcall(mt8183_mcdi_init);
+
+/* After cpuidle-psci (subsys_initcall) has registered the idle states */
+static int __init mt8183_mcdi_cluster_init(void)
+{
+	unsigned int cpu;
+	int n = 0;
+
+	if (!mcdi_mbox)
+		return 0;
+
+	for_each_possible_cpu(cpu)
+		n += mcdi_hook_cluster_states(cpu);
+
+	cpu_latency_qos_remove_request(&mcdi_boot_qos);
+
+	if (n)
+		pr_info("cluster power-down: %d idle states, %s\n", n,
+			cluster_off ? "enabled" : "disabled (enable from sysfs)");
+	return 0;
+}
+late_initcall(mt8183_mcdi_cluster_init);
