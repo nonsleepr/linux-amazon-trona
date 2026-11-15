@@ -13,7 +13,9 @@
  * Do what MediaTek's kernel driver does for CPU power-down: publish the
  * online CPUs (and clear the isolation and buck-off masks) before cpuidle
  * starts, and keep CPUs out of power-down idle states while a CPU is
- * brought up or taken down.
+ * brought up or taken down. CPU_OFF doesn't power a hotplugged CPU down
+ * with this firmware either: like MediaTek's kernel, ask for that with a
+ * SiP call once the CPU is dead, or CPU_ON never brings it back.
  *
  * Cluster power-down needs one more thing from the kernel: the last CPU of
  * a cluster to go idle tells the controller that the cluster may power off
@@ -33,6 +35,7 @@
 
 #define pr_fmt(fmt) "mt8183-mcdi: " fmt
 
+#include <linux/arm-smccc.h>
 #include <linux/bits.h>
 #include <linux/cpu.h>
 #include <linux/cpuhotplug.h>
@@ -47,6 +50,8 @@
 #include <linux/string.h>
 #include <linux/suspend.h>
 #include <linux/topology.h>
+
+#define MTK_SIP_POWER_DOWN_CORE		0xc2000218
 
 /* Mailbox slots, 32 bits each */
 #define MCDI_CLUSTER_CAN_POWER_OFF(c)	((0 + (c)) * 4)
@@ -122,6 +127,12 @@ static int mcdi_cpu_offline(unsigned int cpu)
 
 static int mcdi_cpu_dead(unsigned int cpu)
 {
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(MTK_SIP_POWER_DOWN_CORE, cpu, 0, 0, 0, 0, 0, 0, &res);
+	if (res.a0)
+		pr_warn("CPU%u: power-down call failed: %ld\n", cpu, (long)res.a0);
+
 	mcdi_release();
 	return 0;
 }
