@@ -119,6 +119,10 @@ static const struct resource mt6397_keys_resources[] = {
 	DEFINE_RES_IRQ_NAMED(MT6397_IRQ_HOMEKEY, "homekey"),
 };
 
+static const struct resource mt6358_pwrc_resources[] = {
+	DEFINE_RES_MEM(MT6358_RTC_BASE, MT6358_RTC_SIZE),
+};
+
 static const struct resource mt6323_pwrc_resources[] = {
 	DEFINE_RES_MEM(MT6323_PWRC_BASE, MT6323_PWRC_SIZE),
 };
@@ -232,6 +236,11 @@ static const struct mfd_cell mt6358_devs[] = {
 		.num_resources = ARRAY_SIZE(mt6358_keys_resources),
 		.resources = mt6358_keys_resources,
 		.of_compatible = "mediatek,mt6358-keys"
+	}, {
+		.name = "mt6358-pwrc",
+		.num_resources = ARRAY_SIZE(mt6358_pwrc_resources),
+		.resources = mt6358_pwrc_resources,
+		.of_compatible = "mediatek,mt6358-pwrc"
 	},
 };
 
