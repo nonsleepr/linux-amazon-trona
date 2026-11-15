@@ -232,32 +232,6 @@
 	};
 
 	/*
-	 * Bring-up only: LK leaves these MT6358 LDOs on and nothing claims
-	 * them. Holding them here keeps the unused-regulator cleanup off
-	 * them, and each can be switched off from sysfs ("state") to find
-	 * out which one the system actually depends on.
-	 */
-	output-vaud28 {
-		compatible = "regulator-output";
-		vout-supply = <&mt6358_vaud28_reg>;
-	};
-
-	output-vaux18 {
-		compatible = "regulator-output";
-		vout-supply = <&mt6358_vaux18_reg>;
-	};
-
-	output-vbif28 {
-		compatible = "regulator-output";
-		vout-supply = <&mt6358_vbif28_reg>;
-	};
-
-	output-vio28 {
-		compatible = "regulator-output";
-		vout-supply = <&mt6358_vio28_reg>;
-	};
-
-	/*
 	 * Not used by Linux. Amazon's LK only turns the MT6370 backlight on
 	 * (at the IDME bl_level) when it finds this vendor node at
 	 * /odm/led@6; without it the panel is initialised but stays dark.
@@ -566,19 +540,6 @@
 
 	regulator-coupled-with = <&mt6358_vgpu_reg>;
 	regulator-coupled-max-spread = <100000>;
-};
-
-/*
- * Panel (FT8201AB) 1.8V logic and touch IO supply. Both drivers claim it
- * now; kept on until switching it off with the panel blanked is tested.
- */
-&mt6358_vrf18_reg {
-	regulator-always-on;
-};
-
-/* Touch VDD (FT8201 TDDI); keep on until the touch driver claims it. */
-&mt6358_vldo28_reg {
-	regulator-always-on;
 };
 
 /*
