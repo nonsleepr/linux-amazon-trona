@@ -21,8 +21,8 @@
  * to the controller, when PSCI coordination has every CPU of the cluster
  * asking for the cluster state. cpuidle-psci has no hook for that, so the
  * cluster states' enter callbacks are wrapped here once they exist. Until
- * then a latency limit keeps CPUs out of them. They start disabled (from
- * sysfs, per CPU) unless mt8183_mcdi.cluster_off=1 is given.
+ * then a latency limit keeps CPUs out of them. mt8183_mcdi.cluster_off=0
+ * starts them disabled (per CPU, from sysfs) instead.
  *
  * With every CPU powered down in suspend-to-idle only some wake sources get
  * through (the power key does, the RTC alarm doesn't), so power-down states
@@ -66,9 +66,9 @@ static void __iomem *mcdi_mbox;
 static struct pm_qos_request mcdi_qos;
 static struct pm_qos_request mcdi_boot_qos;
 
-static bool cluster_off;
+static bool cluster_off = true;
 module_param(cluster_off, bool, 0444);
-MODULE_PARM_DESC(cluster_off, "Enable the cluster power-down idle states at boot");
+MODULE_PARM_DESC(cluster_off, "Enable the cluster power-down idle states at boot (default: on)");
 
 static int mcdi_cluster_of[MCDI_NR_CPUS];
 static atomic_t mcdi_cluster_idle[MCDI_NR_CLUSTERS];
