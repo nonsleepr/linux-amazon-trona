@@ -80,6 +80,16 @@ config MT8183_MCDI
 	  available. Say Y for such devices; it only acts on a
 	  "mediatek,mt8183-mcdi-mbox" node that is enabled in the DT.
 
+config MT8183_SPM_SUSPEND
+	bool "MediaTek MT8183 system suspend for the vendor TF-A"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on ARM64 && ARM_PSCI_FW && SUSPEND && OF
+	help
+	  MediaTek's vendor TF-A for MT8183 doesn't configure the SPM for
+	  PSCI SYSTEM_SUSPEND; the kernel has to, as MediaTek's own kernel
+	  does. Say Y for MT8183 devices running that firmware (Amazon's
+	  tablets); it only acts on a "mediatek,mt8183-vendor-spm" node.
+
 config MTK_SVS
 	tristate "MediaTek Smart Voltage Scaling(SVS)"
 	depends on NVMEM_MTK_EFUSE && NVMEM
