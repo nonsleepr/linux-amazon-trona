@@ -723,6 +723,8 @@
 		mediatek,pcm-flags1 = <0x300>;
 		/* PCM timer wake-up after 60 s (32768 Hz ticks) */
 		mediatek,timer-val = <0x1e0000>;
+		/* The SPM's interrupt, the one SPI left unmasked while asleep */
+		mediatek,spm-irq-spi = <187>;
 	};
 };
 
