@@ -15,7 +15,8 @@
  * starts, and keep CPUs out of power-down idle states while a CPU is
  * brought up or taken down. CPU_OFF doesn't power a hotplugged CPU down
  * with this firmware either: like MediaTek's kernel, ask for that with a
- * SiP call once the CPU is dead, or CPU_ON never brings it back.
+ * SiP call once the CPU is dead, or CPU_ON never brings it back, and for
+ * the cluster once its last CPU is.
  *
  * Cluster power-down needs one more thing from the kernel: the last CPU of
  * a cluster to go idle tells the controller that the cluster may power off
@@ -51,6 +52,7 @@
 #include <linux/suspend.h>
 #include <linux/topology.h>
 
+#define MTK_SIP_POWER_DOWN_CLUSTER	0xc2000215
 #define MTK_SIP_POWER_DOWN_CORE		0xc2000218
 
 /* Mailbox slots, 32 bits each */
@@ -132,6 +134,19 @@ static int mcdi_cpu_dead(unsigned int cpu)
 	arm_smccc_smc(MTK_SIP_POWER_DOWN_CORE, cpu, 0, 0, 0, 0, 0, 0, &res);
 	if (res.a0)
 		pr_warn("CPU%u: power-down call failed: %ld\n", cpu, (long)res.a0);
+
+	/*
+	 * The last CPU of a cluster: power the cluster down too, or it stays
+	 * on (and the SPM never gets to system suspend). CPU_ON brings it
+	 * back by itself.
+	 */
+	if (!cpumask_intersects(topology_cluster_cpumask(cpu), cpu_online_mask)) {
+		arm_smccc_smc(MTK_SIP_POWER_DOWN_CLUSTER, topology_cluster_id(cpu),
+			      0, 0, 0, 0, 0, 0, &res);
+		if (res.a0)
+			pr_warn("cluster %d: power-down call failed: %ld\n",
+				topology_cluster_id(cpu), (long)res.a0);
+	}
 
 	mcdi_release();
 	return 0;
