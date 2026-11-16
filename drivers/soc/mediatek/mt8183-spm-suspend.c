@@ -12,13 +12,19 @@
  *  - around suspend to RAM, send the SSPM SPM_SUSPEND_PREPARE /
  *    SPM_POST_SUSPEND (SSPM IPI 6, which lives in SSPM mailbox 1);
  *  - pause the SSPM's MCDI task, arm the SPM's PCM watchdog, send the SSPM
- *    SPM_SUSPEND, pass the suspend flags and wake timer to TF-A, and enter
- *    the SoC's suspend state with PSCI CPU_SUSPEND; undo it all on resume.
+ *    SPM_SUSPEND, pass the suspend flags and wake timer to TF-A, mask every
+ *    SPI but the SPM's, and enter the SoC's suspend state with PSCI
+ *    CPU_SUSPEND; undo it all on resume.
  *
  * The IPI is a plain mailbox write and poll: data in the pin's slots, the
  * pin's bit in the mailbox's IN register raises the SSPM's interrupt, and
  * the SSPM answers with the same bit in the OUT register (write 1 to clear)
  * and the return value in the pin's first slot.
+ *
+ * Bring-up aids, all from the DT: the entry method (CPU_SUSPEND, PSCI
+ * SYSTEM_SUSPEND, MediaTek's "legacy sleep" SMC with the CPU left powered,
+ * or none at all), switches for the individual steps, and breadcrumbs in a
+ * piece of RAM that survives a reset, reported at the next boot.
  *
  * Copyright (c) 2026 Toshit Chawda <r58playz@gmail.com>
  */
@@ -27,25 +33,32 @@
 
 #include <linux/arm-smccc.h>
 #include <linux/bits.h>
+#include <linux/cpuhotplug.h>
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/psci.h>
 #include <linux/sched/clock.h>
 #include <linux/suspend.h>
+#include <uapi/linux/psci.h>
 
+#include <asm/cacheflush.h>
+#include <asm/suspend.h>
 #include <clocksource/arm_arch_timer.h>
 
 #define MTK_SIP_KERNEL_SPM_SUSPEND_ARGS		0xc200021a
 #define MTK_SIP_KERNEL_SPM_FIRMWARE_STATUS	0xc200021b
+#define MTK_SIP_KERNEL_SPM_LEGACY_SLEEP		0xc200021f
 #define MTK_SIP_KERNEL_SPM_ARGS			0xc2000228
 #define MTK_SIP_KERNEL_SPM_GET_PWR_CTRL_ARGS	0xc2000229
 
 /* MTK_SIP_KERNEL_SPM_ARGS commands (MT8183 numbering) */
 #define SPM_ARGS_SPMFW_IDX		0
+#define SPM_ARGS_SUSPEND		2
+#define SPM_ARGS_SUSPEND_FINISH		3
 #define SPM_ARGS_PCM_WDT		8
 
 /* SPM_GET_PWR_CTRL_ARGS: scenario and field */
@@ -78,6 +91,42 @@
 #define MCDI_PAUSE_ACK			(13 * 4)
 #define MCDI_PAUSE_TIMEOUT_US		100000
 
+/* "mediatek,suspend-method" */
+enum {
+	METHOD_CPU_SUSPEND,
+	METHOD_SYSTEM_SUSPEND,
+	METHOD_LEGACY_SLEEP,
+	METHOD_NONE,
+};
+
+/*
+ * Breadcrumbs: word 0 the magic, word 1 the last step reached, word 2 the
+ * CPUs that went down during the suspend, words 4 + step a value per step.
+ */
+#define CRUMB_MAGIC			0x53504d43	/* "SPMC" */
+#define CRUMB_WORDS			32
+#define CRUMB_LAST			1
+#define CRUMB_CPUS_DEAD			2
+#define CRUMB_VAL(step)			(4 + (step))
+
+enum {
+	STEP_BEGIN = 1,
+	STEP_PREPARED,
+	STEP_ENTER,
+	STEP_MCDI_PAUSED,
+	STEP_WDT_ARMED,
+	STEP_SSPM_SUSPEND,
+	STEP_SUSPEND_ARGS,
+	STEP_GIC_MASKED,
+	STEP_FIRMWARE_CALL,
+	STEP_FIRMWARE_RETURN,
+	STEP_GIC_RESTORED,
+	STEP_SSPM_RESUME,
+	STEP_WDT_OFF,
+	STEP_MCDI_RESUMED,
+	STEP_END,
+};
+
 struct mt8183_spm {
 	void __iomem *mbox;
 	void __iomem *mbox_irq;
@@ -86,15 +135,47 @@ struct mt8183_spm {
 	u32 pcm_flags1;
 	u32 timer_val;
 	u32 psci_state;
+	u32 method;
+	bool no_gic_mask;
+	bool no_mcdi_pause;
+	bool no_sspm;
 	bool prepared;
 	/* GIC distributor, and the SPM's interrupt (INTID) left enabled */
 	void __iomem *gicd;
 	u32 spm_irq;
 	int gic_regs;
 	u32 gic_enabled[GIC_MAX_SPI_REGS];
+	u32 *crumbs;
 };
 
 static struct mt8183_spm spm;
+
+static void mt8183_spm_crumb_flush(void)
+{
+	dcache_clean_poc((unsigned long)spm.crumbs,
+			 (unsigned long)(spm.crumbs + CRUMB_WORDS));
+}
+
+static void mt8183_spm_crumb(int step, u32 val)
+{
+	if (!spm.crumbs)
+		return;
+
+	spm.crumbs[0] = CRUMB_MAGIC;
+	spm.crumbs[CRUMB_LAST] = step;
+	spm.crumbs[CRUMB_VAL(step)] = val;
+	mt8183_spm_crumb_flush();
+}
+
+/* Note which CPUs went down on the way into suspend */
+static int mt8183_spm_cpu_dead(unsigned int cpu)
+{
+	if (spm.crumbs && spm.prepared) {
+		spm.crumbs[CRUMB_CPUS_DEAD] |= BIT(cpu);
+		mt8183_spm_crumb_flush();
+	}
+	return 0;
+}
 
 static unsigned long mt8183_spm_smc(unsigned long fid, unsigned long a1,
 				    unsigned long a2, unsigned long a3)
@@ -111,6 +192,9 @@ static int mt8183_spm_sspm_cmd(u32 cmd, const u32 *args, int nargs)
 	void __iomem *data = spm.mbox + SSPM_SPM_SLOT * 4;
 	u32 out;
 	int i, ret;
+
+	if (spm.no_sspm)
+		return 0;
 
 	if (readl(spm.mbox_irq + SSPM_MBOX_OUT_IRQ) & SSPM_SPM_IRQ) {
 		pr_err("SSPM mailbox busy\n");
@@ -153,7 +237,7 @@ static int mt8183_spm_mcdi_pause(bool pause)
 	u32 ack;
 	int ret;
 
-	if (!spm.mcdi)
+	if (!spm.mcdi || spm.no_mcdi_pause)
 		return 0;
 
 	writel(pause, spm.mcdi + MCDI_PAUSE_ACTION);
@@ -164,7 +248,6 @@ static int mt8183_spm_mcdi_pause(bool pause)
 	return ret;
 }
 
-/* Only suspend to RAM goes through the SPM (suspend-to-idle never gets here) */
 /*
  * As MediaTek's kernel does (mt_irq_mask_all()): with every SPI but the
  * SPM's masked, nothing pulls CPU0 out of TF-A's power-down WFI loop, which
@@ -174,7 +257,7 @@ static void mt8183_spm_gic_mask(void)
 {
 	int i;
 
-	if (!spm.gicd)
+	if (!spm.gicd || spm.no_gic_mask)
 		return;
 
 	for (i = 1; i < spm.gic_regs; i++) {
@@ -190,7 +273,7 @@ static void mt8183_spm_gic_restore(void)
 {
 	int i;
 
-	if (!spm.gicd)
+	if (!spm.gicd || spm.no_gic_mask)
 		return;
 
 	for (i = 1; i < spm.gic_regs; i++) {
@@ -199,6 +282,34 @@ static void mt8183_spm_gic_restore(void)
 	}
 }
 
+static int mt8183_spm_system_suspend_finisher(unsigned long arg)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_smc(PSCI_1_0_FN64_SYSTEM_SUSPEND, __pa_symbol(cpu_resume),
+		      0, 0, 0, 0, 0, 0, &res);
+	return res.a0;
+}
+
+static int mt8183_spm_firmware_suspend(void)
+{
+	switch (spm.method) {
+	case METHOD_CPU_SUSPEND:
+		return psci_cpu_suspend_enter(spm.psci_state);
+	case METHOD_SYSTEM_SUSPEND:
+		return cpu_suspend(0, mt8183_spm_system_suspend_finisher);
+	case METHOD_LEGACY_SLEEP:
+		/* The CPU stays powered; needs SPM_FLAG_DIS_CPU/INFRA_PDN */
+		mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SUSPEND, 0, 0);
+		mt8183_spm_smc(MTK_SIP_KERNEL_SPM_LEGACY_SLEEP, 0, 0, 0);
+		mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SUSPEND_FINISH, 0, 0);
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+/* Only suspend to RAM goes through the SPM (suspend-to-idle never gets here) */
 static int mt8183_spm_suspend_begin(suspend_state_t state)
 {
 	int ret;
@@ -206,7 +317,13 @@ static int mt8183_spm_suspend_begin(suspend_state_t state)
 	if (state != PM_SUSPEND_MEM)
 		return 0;
 
+	if (spm.crumbs) {
+		memset(spm.crumbs, 0, CRUMB_WORDS * sizeof(u32));
+		mt8183_spm_crumb(STEP_BEGIN, spm.method);
+	}
+
 	ret = mt8183_spm_sspm_cmd(SPM_SUSPEND_PREPARE, NULL, 0);
+	mt8183_spm_crumb(STEP_PREPARED, ret);
 	if (ret)
 		return ret;
 
@@ -217,10 +334,13 @@ static int mt8183_spm_suspend_begin(suspend_state_t state)
 
 static void mt8183_spm_suspend_end(void)
 {
+	int ret;
+
 	if (!spm.prepared)
 		return;
 
-	mt8183_spm_sspm_cmd(SPM_POST_SUSPEND, NULL, 0);
+	ret = mt8183_spm_sspm_cmd(SPM_POST_SUSPEND, NULL, 0);
+	mt8183_spm_crumb(STEP_END, ret);
 	spm.prepared = false;
 }
 
@@ -228,31 +348,40 @@ static int mt8183_spm_suspend_enter(suspend_state_t state)
 {
 	int ret;
 
+	mt8183_spm_crumb(STEP_ENTER, spm.crumbs ? spm.crumbs[CRUMB_CPUS_DEAD] : 0);
 	pm_set_resume_via_firmware();
 
 	ret = mt8183_spm_mcdi_pause(true);
+	mt8183_spm_crumb(STEP_MCDI_PAUSED, ret);
 	if (ret) {
 		mt8183_spm_mcdi_pause(false);
 		return ret;
 	}
 
 	/* Reset rather than hang if the SPM doesn't bring the system back */
-	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_PCM_WDT, 1,
-		       PCM_WDT_TIMEOUT_S);
+	ret = mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_PCM_WDT, 1,
+			     PCM_WDT_TIMEOUT_S);
+	mt8183_spm_crumb(STEP_WDT_ARMED, ret);
 
-	mt8183_spm_sspm_cmd_time(SPM_SUSPEND);
-	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_SUSPEND_ARGS, spm.pcm_flags,
-		       spm.pcm_flags1, spm.timer_val);
+	ret = mt8183_spm_sspm_cmd_time(SPM_SUSPEND);
+	mt8183_spm_crumb(STEP_SSPM_SUSPEND, ret);
+	ret = mt8183_spm_smc(MTK_SIP_KERNEL_SPM_SUSPEND_ARGS, spm.pcm_flags,
+			     spm.pcm_flags1, spm.timer_val);
+	mt8183_spm_crumb(STEP_SUSPEND_ARGS, ret);
 
-	pr_info("entering suspend state %#x\n", spm.psci_state);
 	mt8183_spm_gic_mask();
-	ret = psci_cpu_suspend_enter(spm.psci_state);
+	mt8183_spm_crumb(STEP_GIC_MASKED, spm.gic_regs);
+	mt8183_spm_crumb(STEP_FIRMWARE_CALL, spm.method);
+	ret = mt8183_spm_firmware_suspend();
+	mt8183_spm_crumb(STEP_FIRMWARE_RETURN, ret);
 	mt8183_spm_gic_restore();
-	pr_info("back from suspend: %d\n", ret);
+	mt8183_spm_crumb(STEP_GIC_RESTORED, 0);
+	pr_info("back from suspend (method %u): %d\n", spm.method, ret);
 
-	mt8183_spm_sspm_cmd_time(SPM_RESUME);
-	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_PCM_WDT, 0, 0);
-	mt8183_spm_mcdi_pause(false);
+	mt8183_spm_crumb(STEP_SSPM_RESUME, mt8183_spm_sspm_cmd_time(SPM_RESUME));
+	mt8183_spm_crumb(STEP_WDT_OFF,
+			 mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_PCM_WDT, 0, 0));
+	mt8183_spm_crumb(STEP_MCDI_RESUMED, mt8183_spm_mcdi_pause(false));
 
 	return ret;
 }
@@ -263,6 +392,28 @@ static const struct platform_suspend_ops mt8183_spm_suspend_ops = {
 	.enter = mt8183_spm_suspend_enter,
 	.end = mt8183_spm_suspend_end,
 };
+
+static void __init mt8183_spm_crumbs_init(struct device_node *np)
+{
+	u32 addr;
+	int i;
+
+	if (of_property_read_u32(np, "mediatek,breadcrumbs", &addr))
+		return;
+
+	spm.crumbs = memremap(addr, CRUMB_WORDS * sizeof(u32), MEMREMAP_WB);
+	if (!spm.crumbs)
+		return;
+
+	if (spm.crumbs[0] == CRUMB_MAGIC) {
+		pr_info("last suspend reached step %u, CPUs down %#x\n",
+			spm.crumbs[CRUMB_LAST], spm.crumbs[CRUMB_CPUS_DEAD]);
+		for (i = STEP_BEGIN; i <= STEP_END; i++)
+			pr_info("  step %2d: %#x\n", i, spm.crumbs[CRUMB_VAL(i)]);
+	}
+	memset(spm.crumbs, 0, CRUMB_WORDS * sizeof(u32));
+	mt8183_spm_crumb_flush();
+}
 
 /* After psci's own suspend_set_ops() (psci_dt_init at setup_arch time) */
 static int __init mt8183_spm_suspend_init(void)
@@ -283,8 +434,13 @@ static int __init mt8183_spm_suspend_init(void)
 	of_property_read_u32(np, "mediatek,timer-val", &spm.timer_val);
 	spm.psci_state = MT8183_PSCI_SUSPEND;
 	of_property_read_u32(np, "mediatek,psci-suspend-param", &spm.psci_state);
+	of_property_read_u32(np, "mediatek,suspend-method", &spm.method);
+	spm.no_gic_mask = of_property_read_bool(np, "mediatek,no-gic-mask");
+	spm.no_mcdi_pause = of_property_read_bool(np, "mediatek,no-mcdi-pause");
+	spm.no_sspm = of_property_read_bool(np, "mediatek,no-sspm");
 	if (!of_property_read_u32(np, "mediatek,spm-irq-spi", &spm.spm_irq))
 		spm.spm_irq += 32;
+	mt8183_spm_crumbs_init(np);
 	spm.mbox = of_iomap(np, 0);
 	spm.mbox_irq = of_iomap(np, 1);
 	of_node_put(np);
@@ -317,12 +473,20 @@ static int __init mt8183_spm_suspend_init(void)
 	/* Which of the SPM firmwares (per DRAM type and rate) to run */
 	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX, fw_idx, 0);
 
+	if (spm.crumbs)
+		cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN, "soc/mt8183-spm:dead",
+					  NULL, mt8183_spm_cpu_dead);
+
 	suspend_set_ops(&mt8183_spm_suspend_ops);
 
-	pr_info("deep suspend via vendor SPM (firmware %u, flags %#x/%#x, timer %#x, wake sources %#lx)\n",
-		fw_idx, spm.pcm_flags, spm.pcm_flags1, spm.timer_val,
+	pr_info("deep suspend via vendor SPM (firmware %u, method %u, state %#x, flags %#x/%#x, timer %#x, wake sources %#lx%s%s%s)\n",
+		fw_idx, spm.method, spm.psci_state, spm.pcm_flags, spm.pcm_flags1,
+		spm.timer_val,
 		mt8183_spm_smc(MTK_SIP_KERNEL_SPM_GET_PWR_CTRL_ARGS,
-			       SPM_PWR_CTRL_SUSPEND, PWR_WAKE_SRC, 0));
+			       SPM_PWR_CTRL_SUSPEND, PWR_WAKE_SRC, 0),
+		spm.no_gic_mask ? ", no GIC mask" : "",
+		spm.no_mcdi_pause ? ", no MCDI pause" : "",
+		spm.no_sspm ? ", no SSPM" : "");
 	return 0;
 
 err_unmap:
