@@ -32,6 +32,7 @@
 #include <linux/iopoll.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/irqchip/arm-gic-v3.h>
 #include <linux/psci.h>
 #include <linux/sched/clock.h>
 #include <linux/suspend.h>
@@ -55,6 +56,8 @@
 #define MT8183_PSCI_SUSPEND		0x01010005
 
 #define PCM_WDT_TIMEOUT_S		30
+
+#define GIC_MAX_SPI_REGS		32
 
 /* SSPM IPI 6 (SPM suspend): mailbox 1, slots 2-9, IRQ bit 1 */
 #define SSPM_SPM_SLOT			2
@@ -82,7 +85,13 @@ struct mt8183_spm {
 	u32 pcm_flags;
 	u32 pcm_flags1;
 	u32 timer_val;
+	u32 psci_state;
 	bool prepared;
+	/* GIC distributor, and the SPM's interrupt (INTID) left enabled */
+	void __iomem *gicd;
+	u32 spm_irq;
+	int gic_regs;
+	u32 gic_enabled[GIC_MAX_SPI_REGS];
 };
 
 static struct mt8183_spm spm;
@@ -156,6 +165,40 @@ static int mt8183_spm_mcdi_pause(bool pause)
 }
 
 /* Only suspend to RAM goes through the SPM (suspend-to-idle never gets here) */
+/*
+ * As MediaTek's kernel does (mt_irq_mask_all()): with every SPI but the
+ * SPM's masked, nothing pulls CPU0 out of TF-A's power-down WFI loop, which
+ * the SPM waits for before taking the system down.
+ */
+static void mt8183_spm_gic_mask(void)
+{
+	int i;
+
+	if (!spm.gicd)
+		return;
+
+	for (i = 1; i < spm.gic_regs; i++) {
+		spm.gic_enabled[i] = readl(spm.gicd + GICD_ISENABLER + i * 4);
+		writel(~0, spm.gicd + GICD_ICENABLER + i * 4);
+	}
+	if (spm.spm_irq)
+		writel(BIT(spm.spm_irq % 32),
+		       spm.gicd + GICD_ISENABLER + spm.spm_irq / 32 * 4);
+}
+
+static void mt8183_spm_gic_restore(void)
+{
+	int i;
+
+	if (!spm.gicd)
+		return;
+
+	for (i = 1; i < spm.gic_regs; i++) {
+		writel(~spm.gic_enabled[i], spm.gicd + GICD_ICENABLER + i * 4);
+		writel(spm.gic_enabled[i], spm.gicd + GICD_ISENABLER + i * 4);
+	}
+}
+
 static int mt8183_spm_suspend_begin(suspend_state_t state)
 {
 	int ret;
@@ -201,7 +244,11 @@ static int mt8183_spm_suspend_enter(suspend_state_t state)
 	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_SUSPEND_ARGS, spm.pcm_flags,
 		       spm.pcm_flags1, spm.timer_val);
 
-	ret = psci_cpu_suspend_enter(MT8183_PSCI_SUSPEND);
+	pr_info("entering suspend state %#x\n", spm.psci_state);
+	mt8183_spm_gic_mask();
+	ret = psci_cpu_suspend_enter(spm.psci_state);
+	mt8183_spm_gic_restore();
+	pr_info("back from suspend: %d\n", ret);
 
 	mt8183_spm_sspm_cmd_time(SPM_RESUME);
 	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_PCM_WDT, 0, 0);
@@ -234,6 +281,10 @@ static int __init mt8183_spm_suspend_init(void)
 	of_property_read_u32(np, "mediatek,pcm-flags", &spm.pcm_flags);
 	of_property_read_u32(np, "mediatek,pcm-flags1", &spm.pcm_flags1);
 	of_property_read_u32(np, "mediatek,timer-val", &spm.timer_val);
+	spm.psci_state = MT8183_PSCI_SUSPEND;
+	of_property_read_u32(np, "mediatek,psci-suspend-param", &spm.psci_state);
+	if (!of_property_read_u32(np, "mediatek,spm-irq-spi", &spm.spm_irq))
+		spm.spm_irq += 32;
 	spm.mbox = of_iomap(np, 0);
 	spm.mbox_irq = of_iomap(np, 1);
 	of_node_put(np);
@@ -242,6 +293,15 @@ static int __init mt8183_spm_suspend_init(void)
 		ret = -EINVAL;
 		goto err_unmap;
 	}
+
+	np = of_find_compatible_node(NULL, NULL, "arm,gic-v3");
+	if (np) {
+		spm.gicd = of_iomap(np, 0);
+		if (spm.gicd)
+			spm.gic_regs = min(GIC_MAX_SPI_REGS,
+					   (int)GICD_TYPER_SPIS(readl(spm.gicd + GICD_TYPER)) / 32);
+	}
+	of_node_put(np);
 
 	np = of_find_compatible_node(NULL, NULL, "mediatek,mt8183-mcdi-mbox");
 	if (np && of_device_is_available(np))
@@ -266,6 +326,8 @@ static int __init mt8183_spm_suspend_init(void)
 	return 0;
 
 err_unmap:
+	if (spm.gicd)
+		iounmap(spm.gicd);
 	if (spm.mcdi)
 		iounmap(spm.mcdi);
 	if (spm.mbox_irq)
