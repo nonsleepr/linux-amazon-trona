@@ -706,6 +706,24 @@
 		compatible = "mediatek,mt8183-mcdi-mbox";
 		reg = <0 0x10480000 0 0x40>;
 	};
+
+	/*
+	 * System suspend through the vendor SPM firmware, which this TF-A
+	 * leaves to the kernel to set up. SSPM mailbox 1 (data, IRQ
+	 * registers) carries the SPM suspend IPI.
+	 */
+	sspm-mailbox@10460000 {
+		compatible = "mediatek,mt8183-vendor-spm";
+		reg = <0 0x10460000 0 0x100>, <0 0x10461000 0 0x8>;
+		/* LPDDR4X, 2 channels, 3200 MT/s: SPMFW_LP4X_2CH_3200 */
+		mediatek,spm-firmware-index = <1>;
+		/* DIS_VCORE_DVS | DIS_VCORE_DFS | DIS_ATF_ABORT | SUSPEND_OPTION */
+		mediatek,pcm-flags = <0x00080098>;
+		/* BIG_BUCK_OFF_ENABLE | BIG_BUCK_ON_ENABLE: vproc11 stays on */
+		mediatek,pcm-flags1 = <0x300>;
+		/* PCM timer wake-up after 60 s (32768 Hz ticks) */
+		mediatek,timer-val = <0x1e0000>;
+	};
 };
 
 &vcodec_dec {
