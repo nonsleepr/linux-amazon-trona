@@ -77,7 +77,13 @@ static bool cluster_off = true;
 module_param(cluster_off, bool, 0444);
 MODULE_PARM_DESC(cluster_off, "Enable the cluster power-down idle states at boot (default: on)");
 
+/*
+ * Cluster of each CPU and the CPUs of each cluster, from the topology at
+ * boot: a dying CPU's own topology masks are already reset to just itself
+ * by the time its dead callbacks run.
+ */
 static int mcdi_cluster_of[MCDI_NR_CPUS];
+static struct cpumask mcdi_cluster_cpus[MCDI_NR_CLUSTERS];
 static atomic_t mcdi_cluster_idle[MCDI_NR_CLUSTERS];
 static int (*mcdi_psci_enter)(struct cpuidle_device *dev,
 			      struct cpuidle_driver *drv, int idx);
@@ -130,6 +136,7 @@ static int mcdi_cpu_offline(unsigned int cpu)
 static int mcdi_cpu_dead(unsigned int cpu)
 {
 	struct arm_smccc_res res;
+	int cluster;
 
 	arm_smccc_smc(MTK_SIP_POWER_DOWN_CORE, cpu, 0, 0, 0, 0, 0, 0, &res);
 	if (res.a0)
@@ -140,12 +147,14 @@ static int mcdi_cpu_dead(unsigned int cpu)
 	 * on (and the SPM never gets to system suspend). CPU_ON brings it
 	 * back by itself.
 	 */
-	if (!cpumask_intersects(topology_cluster_cpumask(cpu), cpu_online_mask)) {
-		arm_smccc_smc(MTK_SIP_POWER_DOWN_CLUSTER, topology_cluster_id(cpu),
+	cluster = cpu < MCDI_NR_CPUS ? mcdi_cluster_of[cpu] : -1;
+	if (cluster >= 0 &&
+	    !cpumask_intersects(&mcdi_cluster_cpus[cluster], cpu_online_mask)) {
+		arm_smccc_smc(MTK_SIP_POWER_DOWN_CLUSTER, cluster,
 			      0, 0, 0, 0, 0, 0, &res);
 		if (res.a0)
 			pr_warn("cluster %d: power-down call failed: %ld\n",
-				topology_cluster_id(cpu), (long)res.a0);
+				cluster, (long)res.a0);
 	}
 
 	mcdi_release();
@@ -178,7 +187,7 @@ static int __cpuidle mcdi_enter_cluster_state(struct cpuidle_device *dev,
 
 	/* The last CPU of the cluster in lets the controller power it off */
 	if (atomic_inc_return(idle) ==
-	    cpumask_weight_and(cpu_online_mask, topology_cluster_cpumask(dev->cpu)))
+	    cpumask_weight_and(cpu_online_mask, &mcdi_cluster_cpus[cluster]))
 		writel(1, mcdi_mbox + MCDI_CLUSTER_CAN_POWER_OFF(cluster));
 
 	ret = mcdi_psci_enter(dev, drv, idx);
@@ -193,14 +202,10 @@ static int mcdi_hook_cluster_states(unsigned int cpu)
 {
 	struct cpuidle_device *dev = per_cpu(cpuidle_devices, cpu);
 	struct cpuidle_driver *drv = cpuidle_get_cpu_driver(dev);
-	int cluster = topology_cluster_id(cpu);
 	int i, n = 0;
 
-	if (!dev || !drv || cpu >= MCDI_NR_CPUS ||
-	    cluster < 0 || cluster >= MCDI_NR_CLUSTERS)
+	if (!dev || !drv || cpu >= MCDI_NR_CPUS || mcdi_cluster_of[cpu] < 0)
 		return 0;
-
-	mcdi_cluster_of[cpu] = cluster;
 
 	for (i = 1; i < drv->state_count; i++) {
 		struct cpuidle_state *state = &drv->states[i];
@@ -252,6 +257,7 @@ static struct notifier_block mcdi_pm_nb = {
 static int __init mt8183_mcdi_init(void)
 {
 	struct device_node *np;
+	unsigned int cpu;
 	int ret;
 
 	np = of_find_compatible_node(NULL, NULL, "mediatek,mt8183-mcdi-mbox");
@@ -272,6 +278,17 @@ static int __init mt8183_mcdi_init(void)
 	cpu_latency_qos_add_request(&mcdi_boot_qos, MCDI_NO_CLUSTER_LATENCY_US);
 
 	cpus_read_lock();
+	for (cpu = 0; cpu < MCDI_NR_CPUS; cpu++) {
+		int cluster = cpu_possible(cpu) ? topology_cluster_id(cpu) : -1;
+
+		if (cluster < 0 || cluster >= MCDI_NR_CLUSTERS) {
+			mcdi_cluster_of[cpu] = -1;
+			continue;
+		}
+		mcdi_cluster_of[cpu] = cluster;
+		cpumask_set_cpu(cpu, &mcdi_cluster_cpus[cluster]);
+	}
+
 	writel(0, mcdi_mbox + MCDI_CPU_ISOLATION_MASK);
 	writel(0, mcdi_mbox + MCDI_BUCK_POWER_OFF_MASK);
 	mcdi_publish_online_cpus();
