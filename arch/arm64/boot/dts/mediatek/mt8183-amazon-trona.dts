@@ -725,6 +725,8 @@
 		mediatek,timer-val = <0x1e0000>;
 		/* The SPM's interrupt, the one SPI left unmasked while asleep */
 		mediatek,spm-irq-spi = <187>;
+		/* Bring-up: breadcrumbs in the unused vendor ram_console area */
+		mediatek,breadcrumbs = <0x54408000>;
 	};
 };
 
