@@ -5,8 +5,9 @@
  * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU, touchscreen,
  * keys, the MT6358 fuel gauge, the MT6370 backlight, and the display: LK's
  * framebuffer as a simple-framebuffer until mediatek-drm takes the FT8201AB
- * DSI panel over. The rest of the MT6370 (charger/Type-C), audio and WiFi
- * are not described yet.
+ * DSI panel over. The rest of the MT6370 (charger/Type-C) and audio are
+ * not described yet. WiFi is the SoC's own connectivity subsystem (CONSYS)
+ * with an MT6631 RF chip, driven by MediaTek's vendor stack.
  */
 
 /dts-v1/;
@@ -233,6 +234,22 @@
 
 		mdump@6ffc0000 {
 			reg = <0 0x6ffc0000 0 0x40000>;
+		};
+
+		/*
+		 * Memory the CONSYS shares with the kernel: its WiFi firmware
+		 * and its logs and dumps. Placed by the kernel like the vendor
+		 * DT's, so there is no "reg" for LK to compare with its own
+		 * reservations. The CONSYS reaches it through a remap register
+		 * that takes the address in 2 MiB units and can't point above
+		 * 0xc0000000.
+		 */
+		consys_mem: consys-reserve-memory {
+			compatible = "mediatek,consys-reserve-memory";
+			size = <0 0x200000>;
+			alignment = <0 0x200000>;
+			alloc-ranges = <0 0x40000000 0 0x80000000>;
+			no-map;
 		};
 	};
 
@@ -550,6 +567,60 @@
 };
 
 &pio {
+	/*
+	 * GPIO113..121 are the CONSYS's lines to the MT6631 RF chip; they are
+	 * only handed to it while it is powered. GPIO156 selects the WiFi
+	 * antenna. GPIO7 is a board strap for where the 26 MHz reference comes
+	 * from; its pull is left as LK set it.
+	 */
+	consys_pins_default: consys-pins-default {
+		pins-rf {
+			pinmux = <PINMUX_GPIO113__FUNC_GPIO113>,
+				 <PINMUX_GPIO114__FUNC_GPIO114>,
+				 <PINMUX_GPIO115__FUNC_GPIO115>,
+				 <PINMUX_GPIO116__FUNC_GPIO116>,
+				 <PINMUX_GPIO117__FUNC_GPIO117>,
+				 <PINMUX_GPIO118__FUNC_GPIO118>,
+				 <PINMUX_GPIO119__FUNC_GPIO119>,
+				 <PINMUX_GPIO120__FUNC_GPIO120>,
+				 <PINMUX_GPIO121__FUNC_GPIO121>;
+		};
+
+		pins-ant-sel {
+			pinmux = <PINMUX_GPIO156__FUNC_GPIO156>;
+			bias-disable;
+		};
+
+		pins-coclock {
+			pinmux = <PINMUX_GPIO7__FUNC_GPIO7>;
+			input-enable;
+		};
+	};
+
+	consys_pins_active: consys-pins-active {
+		pins-rf {
+			pinmux = <PINMUX_GPIO113__FUNC_CONN_TOP_CLK>,
+				 <PINMUX_GPIO114__FUNC_CONN_TOP_DATA>,
+				 <PINMUX_GPIO115__FUNC_CONN_BT_CLK>,
+				 <PINMUX_GPIO116__FUNC_CONN_BT_DATA>,
+				 <PINMUX_GPIO117__FUNC_CONN_WF_HB0>,
+				 <PINMUX_GPIO118__FUNC_CONN_WF_HB1>,
+				 <PINMUX_GPIO119__FUNC_CONN_WF_HB2>,
+				 <PINMUX_GPIO120__FUNC_CONN_WB_PTA>,
+				 <PINMUX_GPIO121__FUNC_CONN_HRST_B>;
+		};
+
+		pins-ant-sel {
+			pinmux = <PINMUX_GPIO156__FUNC_GPIO156>;
+			bias-disable;
+		};
+
+		pins-coclock {
+			pinmux = <PINMUX_GPIO7__FUNC_GPIO7>;
+			input-enable;
+		};
+	};
+
 	keypad_pins: keypad-pins {
 		pins-row {
 			pinmux = <PINMUX_GPIO92__FUNC_GPIO92>;
@@ -733,6 +804,77 @@
 		mediatek,timer-val = <0xfd200000>;
 		/* Bring-up: breadcrumbs in the unused vendor ram_console area */
 		mediatek,breadcrumbs = <0x54408000>;
+	};
+
+	/*
+	 * The connectivity subsystem (CONSYS): a microcontroller with WiFi and
+	 * Bluetooth MACs in its own power domain, and an MT6631 RF chip. It is
+	 * driven by MediaTek's vendor stack, which finds its resources by
+	 * position, so the order of the reg and interrupt entries matters.
+	 *
+	 * BTIF is the UART the kernel talks to the microcontroller over, with
+	 * two APDMA channels of its own past the ones the "apdma" node has.
+	 */
+	btif: btif@1100c000 {
+		compatible = "mediatek,mt8183-btif";
+		reg = <0 0x1100c000 0 0x1000>,	/* BTIF */
+		      <0 0x11000a80 0 0x80>,	/* APDMA, BTIF TX */
+		      <0 0x11000b00 0 0x80>;	/* APDMA, BTIF RX */
+		interrupts = <GIC_SPI 114 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 139 IRQ_TYPE_LEVEL_LOW>,
+			     <GIC_SPI 140 IRQ_TYPE_LEVEL_LOW>;
+		clocks = <&infracfg CLK_INFRA_BTIF>,
+			 <&infracfg CLK_INFRA_AP_DMA>;
+		clock-names = "btifc", "apdmac";
+	};
+
+	consys: consys@18070000 {
+		compatible = "mediatek,mt8183-consys";
+		reg = <0 0x18070000 0 0x1000>,	/* CONN_MCU_CONFIG */
+		      <0 0x180b6000 0 0x100>;	/* CONN AFE */
+		interrupts = <GIC_SPI 289 IRQ_TYPE_LEVEL_LOW>,	/* BGF wakeup */
+			     <GIC_SPI 291 IRQ_TYPE_LEVEL_LOW>;	/* watchdog */
+		power-domains = <&spm MT8183_POWER_DOMAIN_CONN>;
+		resets = <&watchdog MT8183_TOPRGU_CONN_MCU_SW_RST>;
+		reset-names = "mcu";
+		/* The CONSYS's own channel to the PMIC, for its 26 MHz request */
+		clocks = <&infracfg CLK_INFRA_PMIC_CONN>;
+		clock-names = "pmic-conn";
+		memory-region = <&consys_mem>;
+		mediatek,infracfg = <&infracfg>;
+		mediatek,pmic = <&pmic>;
+		vcn18-supply = <&mt6358_vcn18_reg>;
+		vcn28-supply = <&mt6358_vcn28_reg>;
+		vcn33-supply = <&mt6358_vcn33_reg>;
+		pinctrl-names = "default", "active";
+		pinctrl-0 = <&consys_pins_default>;
+		pinctrl-1 = <&consys_pins_active>;
+		/*
+		 * High: the 26 MHz reference is the PMIC's XO_WCN buffer. Low:
+		 * the RF chip has its own TCXO, powered from vcn28.
+		 */
+		coclock-gpios = <&pio 7 GPIO_ACTIVE_HIGH>;
+		/* Asserted (the pin low) selects the auxiliary antenna */
+		ant-sel-gpios = <&pio 156 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * No power-domains here: the WiFi function is only touched while the
+	 * CONSYS driver has the domain on, and a second consumer that doesn't
+	 * do runtime PM would hold it on for good.
+	 */
+	wifi: wifi@180f0000 {
+		compatible = "mediatek,mt8183-consys-wifi";
+		reg = <0 0x180f0000 0 0x1100>,	/* WiFi host interface */
+		      <0 0x10212180 0 0x6c>,	/* CQDMA channel */
+		      <0 0x180e0000 0 0x70>;	/* CONN remap config */
+		interrupts = <GIC_SPI 290 IRQ_TYPE_LEVEL_LOW>,	/* host interface */
+			     <GIC_SPI 118 IRQ_TYPE_LEVEL_LOW>;	/* CQDMA */
+		clocks = <&infracfg CLK_INFRA_CQ_DMA>;
+		clock-names = "wifi-dma";
+		mediatek,infracfg = <&infracfg>;
+		/* Chip ID, firmware load address, firmware start address */
+		hardware-values = <0x00000788>, <0x000a5800>, <0x000a5800>;
 	};
 };
 
