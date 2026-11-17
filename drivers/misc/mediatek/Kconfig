@@ -22,3 +22,61 @@ menuconfig MTK_CONNECTIVITY_VENDOR
 	  cfg80211 WiFi driver.
 
 	  If unsure, say N.
+
+if MTK_CONNECTIVITY_VENDOR
+
+config MTK_BTIF
+	tristate "MediaTek BTIF UART for the connectivity subsystem"
+	depends on m
+	help
+	  The UART (with its own two APDMA channels) that the kernel
+	  controls the connectivity subsystem over. Needed by the WMT core.
+
+	  The module is called btif.
+
+config MTK_COMBO
+	tristate "MediaTek WMT core for the connectivity subsystem"
+	depends on MTK_BTIF && m
+	select FW_LOADER
+	help
+	  The WMT ("wireless management task") core: it powers the
+	  connectivity subsystem up and down, loads its ROM patches and
+	  carries the WiFi, Bluetooth, FM and GPS functions' control
+	  traffic over the STP protocol on BTIF.
+
+	  The module is called wmt_drv.
+
+config MTK_COMBO_CHIP_CONSYS_6771
+	def_bool MTK_COMBO
+	help
+	  The subsystem built into MT6771 and MT8183, with an MT6631 RF
+	  chip. The only one this copy of the vendor stack is set up for.
+
+config MTK_WCN_COMBO_CHIP_SUPPORT
+	bool "External MT66xx combo chips on SDIO or UART"
+	depends on MTK_COMBO && MMC && TTY
+	help
+	  The WMT core's support for MediaTek's stand-alone combo chips.
+	  Not needed for a subsystem built into the SoC.
+
+	  If unsure, say N.
+
+config MTK_COMBO_WIFI
+	tristate "MediaTek gen3 WiFi for the connectivity subsystem"
+	depends on MTK_COMBO && NL80211_TESTMODE && m
+	help
+	  MediaTek's "gen3" cfg80211 WiFi driver for the connectivity
+	  subsystem, and the adaptor that switches the WiFi function on.
+
+	  The modules are called wlan_drv_gen3 and wmt_chrdev_wifi.
+
+config AMZN_IDME
+	bool "Amazon IDME device data from the device tree"
+	depends on MTK_COMBO_WIFI
+	default y
+	help
+	  Amazon's bootloader passes per-device manufacturing data (the
+	  board type, the WiFi MAC address and calibration) in an /idme
+	  node of the device tree. Say Y for the WiFi driver to use it.
+
+endif # MTK_CONNECTIVITY_VENDOR
