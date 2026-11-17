@@ -264,6 +264,8 @@ struct ssusb_mtk {
 	bool is_host;
 	/* no VBUS sensing: force VBUS valid in the device MAC while running */
 	bool force_vbus;
+	/* the IP came back from suspend reset (SoC infra domain powered down) */
+	bool ip_lost;
 	int u2_ports;
 	int u3_ports;
 	int u2p_dis_msk;

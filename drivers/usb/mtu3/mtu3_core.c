@@ -890,6 +890,37 @@ static int mtu3_hw_init(struct mtu3 *mtu)
 	return 0;
 }
 
+/*
+ * After the IP lost its state over suspend: set the device side up as at
+ * probe and start it again. Whatever the host had configured is gone, so
+ * report a disconnect; the host enumerates the device afresh.
+ */
+static int mtu3_hw_restore(struct mtu3 *mtu)
+{
+	unsigned long flags;
+	int ret;
+
+	mtu3_device_reset(mtu);
+	ret = mtu3_device_enable(mtu);
+	if (ret) {
+		dev_err(mtu->dev, "device enable failed %d\n", ret);
+		return ret;
+	}
+	mtu3_regs_init(mtu);
+
+	spin_lock_irqsave(&mtu->lock, flags);
+	if (mtu->g.speed != USB_SPEED_UNKNOWN)
+		mtu3_gadget_disconnect(mtu);
+	spin_unlock_irqrestore(&mtu->lock, flags);
+
+	if (mtu->is_active) {
+		mtu->is_active = 0;
+		mtu3_start(mtu);
+	}
+
+	return 0;
+}
+
 static void mtu3_hw_exit(struct mtu3 *mtu)
 {
 	mtu3_device_disable(mtu);
@@ -1067,6 +1098,11 @@ int ssusb_gadget_resume(struct ssusb_mtk *ssusb, pm_message_t msg)
 {
 	struct mtu3 *mtu = ssusb->u3d;
 	bool vbus_on = ssusb->force_vbus && !PMSG_IS_AUTO(msg);
+
+	if (ssusb->ip_lost) {
+		ssusb->ip_lost = false;
+		return mtu3_hw_restore(mtu);
+	}
 
 	if (!mtu->gadget_driver) {
 		if (vbus_on)

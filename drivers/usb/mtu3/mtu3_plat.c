@@ -571,6 +571,19 @@ static int mtu3_resume_common(struct device *dev, pm_message_t msg)
 	if (ret)
 		goto phy_err;
 
+	/*
+	 * A suspend that powers the SoC's infra domain down (MT8183 with its
+	 * SPM) resets the IP: it comes back held in reset. Reset it the way
+	 * probe does; the device side is set up again on resume (peripheral
+	 * mode only).
+	 */
+	if (msg.event == PM_EVENT_RESUME &&
+	    mtu3_readl(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0) & SSUSB_IP_SW_RST) {
+		dev_info(dev, "controller reset over suspend, setting it up again\n");
+		ssusb_ip_sw_reset(ssusb);
+		ssusb->ip_lost = true;
+	}
+
 	return resume_ip_and_ports(ssusb, msg);
 
 phy_err:
