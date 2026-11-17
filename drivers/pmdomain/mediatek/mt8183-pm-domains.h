@@ -38,6 +38,13 @@ static const struct scpsys_domain_data scpsys_domain_data_mt8183[] = {
 				    MT8183_TOP_AXI_PROT_EN_CLR,
 				    MT8183_TOP_AXI_PROT_EN_STA1),
 		},
+		/*
+		 * Every domain is powered on when it is registered, and then
+		 * stays on until every consumer of the controller has probed.
+		 * The connectivity subsystem is reset by power cycling this
+		 * one, so leave it off for its one consumer.
+		 */
+		.caps = MTK_SCPD_KEEP_DEFAULT_OFF,
 	},
 	[MT8183_POWER_DOMAIN_MFG_ASYNC] = {
 		.name = "mfg_async",
