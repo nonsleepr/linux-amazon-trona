@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: GPL-2.0-only
+#
+# MediaTek's vendor drivers for the connectivity subsystem (CONSYS) built
+# into its SoCs. The symbols keep the names the vendor code tests.
+#
+
+menuconfig MTK_CONNECTIVITY_VENDOR
+	bool "MediaTek vendor connectivity stack (BTIF, WMT, gen3 WiFi)"
+	depends on ARCH_MEDIATEK || COMPILE_TEST
+	depends on OF && CFG80211
+	# The WiFi driver registers private wireless extensions. These change
+	# struct net_device and struct iw_handler_def, so they are selected
+	# here rather than by the WiFi driver: a kernel configured for this
+	# stack then has the same layout whichever of its modules are built.
+	select WIRELESS_EXT
+	select WEXT_PRIV
+	help
+	  Support for the WiFi function of the connectivity subsystem found
+	  in MediaTek SoCs such as MT8183 (with an MT6631 RF chip), through
+	  MediaTek's out-of-tree drivers: the BTIF UART, the WMT core that
+	  powers the subsystem up and loads its ROM patches, and the "gen3"
+	  cfg80211 WiFi driver.
+
+	  If unsure, say N.
