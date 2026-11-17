@@ -445,8 +445,9 @@ static void __init mt8183_spm_crumbs_init(struct device_node *np)
 	if (!spm.crumbs)
 		return;
 
-	if (spm.crumbs[0] == CRUMB_MAGIC) {
-		pr_info("last suspend reached step %u, CPUs down %#x\n",
+	/* Only a suspend that didn't finish is worth reporting */
+	if (spm.crumbs[0] == CRUMB_MAGIC && spm.crumbs[CRUMB_LAST] != STEP_END) {
+		pr_warn("last suspend stopped at step %u, CPUs down %#x\n",
 			spm.crumbs[CRUMB_LAST], spm.crumbs[CRUMB_CPUS_DEAD]);
 		for (i = STEP_BEGIN; i <= STEP_END; i++)
 			pr_info("  step %2d: %#x\n", i, spm.crumbs[CRUMB_VAL(i)]);
