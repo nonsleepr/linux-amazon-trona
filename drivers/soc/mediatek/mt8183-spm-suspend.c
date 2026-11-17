@@ -8,9 +8,11 @@
  * kernel does; called bare, its SYSTEM_SUSPEND never returns. So, like
  * MediaTek's kernel:
  *
- *  - at boot, tell TF-A which SPM firmware matches the DRAM, and start it:
- *    MediaTek's kernel does that from its Vcore DVFS code, and with the
- *    SPM's firmware stopped TF-A's suspend never completes;
+ *  - at boot, tell TF-A which SPM firmware matches the DRAM; start it
+ *    before the first suspend (MediaTek's kernel does that from its Vcore
+ *    DVFS code; with the SPM's firmware stopped TF-A's suspend never
+ *    completes). Not at boot: started while the eMMC was coming up, the
+ *    eMMC once failed to initialise;
  *  - service the SPM's interrupt (and so set up its polarity in the
  *    sysirq inverter; unrequested, the GIC sees it pending for good);
  *  - around suspend to RAM, send the SSPM SPM_SUSPEND_PREPARE /
@@ -80,6 +82,7 @@
 
 /* SPM registers */
 #define SPM_IRQ_STA			0x158
+#define PCM_REG15_DATA			0x13c	/* 0 while the firmware is stopped */
 
 /* SPM_GET_PWR_CTRL_ARGS: scenario and field */
 #define SPM_PWR_CTRL_SUSPEND		17
@@ -155,6 +158,7 @@ struct mt8183_spm {
 	u32 pcm_flags;
 	u32 pcm_flags1;
 	u32 timer_val;
+	u32 fw_flags;
 	u32 psci_state;
 	u32 method;
 	bool no_gic_mask;
@@ -349,6 +353,21 @@ static int mt8183_spm_firmware_suspend(void)
 	}
 }
 
+/* Start the SPM's firmware, as MediaTek's spm_check_status_before_dvfs() */
+static void mt8183_spm_fw_start(void)
+{
+	if (readl(spm.spm_base + PCM_REG15_DATA))
+		return;
+
+	/* Without Vcore DVFS, which nothing here drives */
+	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, VCOREFS_SMC_CMD_FW_INIT,
+		       VCORE_BOOT_UP_OPP, 0);
+	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, VCOREFS_SMC_CMD_FW_RUN,
+		       spm.fw_flags, 0);
+	pr_info("SPM firmware started: %#x\n",
+		readl(spm.spm_base + PCM_REG15_DATA));
+}
+
 /* Only suspend to RAM goes through the SPM (suspend-to-idle never gets here) */
 static int mt8183_spm_suspend_begin(suspend_state_t state)
 {
@@ -356,6 +375,8 @@ static int mt8183_spm_suspend_begin(suspend_state_t state)
 
 	if (state != PM_SUSPEND_MEM)
 		return 0;
+
+	mt8183_spm_fw_start();
 
 	if (spm.crumbs) {
 		memset(spm.crumbs, 0, CRUMB_WORDS * sizeof(u32));
@@ -460,7 +481,7 @@ static void __init mt8183_spm_crumbs_init(struct device_node *np)
 static int __init mt8183_spm_suspend_init(void)
 {
 	struct device_node *np;
-	u32 fw_idx, fw_flags = SPM_FW_FLAGS_NO_DVFS;
+	u32 fw_idx;
 	unsigned int irq;
 	int ret;
 
@@ -480,7 +501,8 @@ static int __init mt8183_spm_suspend_init(void)
 	spm.no_gic_mask = of_property_read_bool(np, "mediatek,no-gic-mask");
 	spm.no_mcdi_pause = of_property_read_bool(np, "mediatek,no-mcdi-pause");
 	spm.no_sspm = of_property_read_bool(np, "mediatek,no-sspm");
-	of_property_read_u32(np, "mediatek,spm-fw-flags", &fw_flags);
+	spm.fw_flags = SPM_FW_FLAGS_NO_DVFS;
+	of_property_read_u32(np, "mediatek,spm-fw-flags", &spm.fw_flags);
 	mt8183_spm_crumbs_init(np);
 	spm.mbox = of_iomap(np, 0);
 	spm.mbox_irq = of_iomap(np, 1);
@@ -516,12 +538,6 @@ static int __init mt8183_spm_suspend_init(void)
 	/* Which of the SPM firmwares (per DRAM type and rate) to run */
 	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX, fw_idx, 0);
 
-	/* Start it, without Vcore DVFS, which nothing here drives */
-	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, VCOREFS_SMC_CMD_FW_INIT,
-		       VCORE_BOOT_UP_OPP, 0);
-	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, VCOREFS_SMC_CMD_FW_RUN,
-		       fw_flags, 0);
-
 	/* Left enabled while asleep: the SPM wakes CPU0 with it */
 	ret = request_irq(irq, mt8183_spm_irq, IRQF_NO_SUSPEND, "mt8183-spm", NULL);
 	if (ret) {
@@ -536,8 +552,10 @@ static int __init mt8183_spm_suspend_init(void)
 
 	suspend_set_ops(&mt8183_spm_suspend_ops);
 
-	pr_info("deep suspend via vendor SPM (firmware %u flags %#x, SPM IRQ %u, method %u, state %#x, flags %#x/%#x, timer %#x, wake sources %#lx%s%s%s)\n",
-		fw_idx, fw_flags, spm.spm_irq, spm.method, spm.psci_state,
+	pr_info("deep suspend via vendor SPM (firmware %u flags %#x%s, SPM IRQ %u, method %u, state %#x, flags %#x/%#x, timer %#x, wake sources %#lx%s%s%s)\n",
+		fw_idx, spm.fw_flags,
+		readl(spm.spm_base + PCM_REG15_DATA) ? " already running" : "",
+		spm.spm_irq, spm.method, spm.psci_state,
 		spm.pcm_flags, spm.pcm_flags1, spm.timer_val,
 		mt8183_spm_smc(MTK_SIP_KERNEL_SPM_GET_PWR_CTRL_ARGS,
 			       SPM_PWR_CTRL_SUSPEND, PWR_WAKE_SRC, 0),
