@@ -354,6 +354,12 @@ struct mtk_thermal {
 	const struct mtk_thermal_data *conf;
 	struct mtk_thermal_bank banks[MAX_NUM_ZONES];
 
+	/* For setting the hardware up again after a suspend that reset it */
+	void __iomem *apmixed_base;
+	void __iomem *auxadc_base;
+	u64 apmixed_phys_base;
+	u64 auxadc_phys_base;
+
 	int (*raw_to_mcelsius)(struct mtk_thermal *mt, int sensno, s32 raw);
 };
 
@@ -1260,9 +1266,24 @@ static void mtk_thermal_release_periodic_ts(struct mtk_thermal *mt,
 	writel((tmp & (~0x10e)), mt->thermal_base + TEMP_MSRCTL1);
 }
 
+static void mtk_thermal_hw_init(struct mtk_thermal *mt)
+{
+	int i, ctrl_id;
+
+	mtk_thermal_turn_on_buffer(mt, mt->apmixed_base);
+
+	if (mt->conf->version != MTK_THERMAL_V1)
+		mtk_thermal_release_periodic_ts(mt, mt->auxadc_base);
+
+	for (ctrl_id = 0; ctrl_id < mt->conf->num_controller ; ctrl_id++)
+		for (i = 0; i < mt->conf->num_banks; i++)
+			mtk_thermal_init_bank(mt, i, mt->apmixed_phys_base,
+					      mt->auxadc_phys_base, ctrl_id);
+}
+
 static int mtk_thermal_probe(struct platform_device *pdev)
 {
-	int ret, i, ctrl_id;
+	int ret;
 	struct device_node *auxadc, *apmixedsys, *np = pdev->dev.of_node;
 	struct mtk_thermal *mt;
 	u64 auxadc_phys_base, apmixed_phys_base;
@@ -1337,10 +1358,10 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	mtk_thermal_turn_on_buffer(mt, apmixed_base);
-
-	if (mt->conf->version != MTK_THERMAL_V1)
-		mtk_thermal_release_periodic_ts(mt, auxadc_base);
+	mt->apmixed_base = apmixed_base;
+	mt->auxadc_base = auxadc_base;
+	mt->apmixed_phys_base = apmixed_phys_base;
+	mt->auxadc_phys_base = auxadc_phys_base;
 
 	if (mt->conf->version == MTK_THERMAL_V1)
 		mt->raw_to_mcelsius = raw_to_mcelsius_v1;
@@ -1349,10 +1370,9 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	else
 		mt->raw_to_mcelsius = raw_to_mcelsius_v3;
 
-	for (ctrl_id = 0; ctrl_id < mt->conf->num_controller ; ctrl_id++)
-		for (i = 0; i < mt->conf->num_banks; i++)
-			mtk_thermal_init_bank(mt, i, apmixed_phys_base,
-					      auxadc_phys_base, ctrl_id);
+	mtk_thermal_hw_init(mt);
+
+	platform_set_drvdata(pdev, mt);
 
 	tzdev = devm_thermal_of_zone_register(&pdev->dev, 0, mt,
 					      &mtk_thermal_ops);
@@ -1366,11 +1386,44 @@ static int mtk_thermal_probe(struct platform_device *pdev)
 	return mtk_thermal_register_sensor_zones(mt);
 }
 
+/*
+ * A suspend that powers the SoC's infra domain down (MT8183's, with the
+ * SPM's suspend) resets the controller, and the sensors read nothing
+ * valid any more. Set it up again, and wait for the first valid reading:
+ * SVS, resumed next, wants a temperature right away.
+ */
+static int mtk_thermal_resume(struct device *dev)
+{
+	struct mtk_thermal *mt = dev_get_drvdata(dev);
+	int i, b, temp = INT_MIN;
+	int ret;
+
+	ret = device_reset_optional(dev);
+	if (ret)
+		return ret;
+
+	mtk_thermal_hw_init(mt);
+
+	for (i = 0; i < 20 && !mtk_thermal_temp_is_valid(temp); i++) {
+		msleep(10);
+		for (b = 0; b < mt->conf->num_banks; b++) {
+			mtk_thermal_get_bank(&mt->banks[b]);
+			temp = max(temp, mtk_thermal_bank_temperature(&mt->banks[b]));
+			mtk_thermal_put_bank(&mt->banks[b]);
+		}
+	}
+
+	return 0;
+}
+
+static DEFINE_SIMPLE_DEV_PM_OPS(mtk_thermal_pm_ops, NULL, mtk_thermal_resume);
+
 static struct platform_driver mtk_thermal_driver = {
 	.probe = mtk_thermal_probe,
 	.driver = {
 		.name = "mtk-thermal",
 		.of_match_table = mtk_thermal_of_match,
+		.pm = pm_sleep_ptr(&mtk_thermal_pm_ops),
 	},
 };
 
