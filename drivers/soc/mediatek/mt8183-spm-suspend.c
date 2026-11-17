@@ -8,7 +8,11 @@
  * kernel does; called bare, its SYSTEM_SUSPEND never returns. So, like
  * MediaTek's kernel:
  *
- *  - at boot, tell TF-A which SPM firmware matches the DRAM;
+ *  - at boot, tell TF-A which SPM firmware matches the DRAM, and start it:
+ *    MediaTek's kernel does that from its Vcore DVFS code, and with the
+ *    SPM's firmware stopped TF-A's suspend never completes;
+ *  - service the SPM's interrupt (and so set up its polarity in the
+ *    sysirq inverter; unrequested, the GIC sees it pending for good);
  *  - around suspend to RAM, send the SSPM SPM_SUSPEND_PREPARE /
  *    SPM_POST_SUSPEND (SSPM IPI 6, which lives in SSPM mailbox 1);
  *  - pause the SSPM's MCDI task, arm the SPM's PCM watchdog, send the SSPM
@@ -37,9 +41,12 @@
 #include <linux/init.h>
 #include <linux/io.h>
 #include <linux/iopoll.h>
+#include <linux/interrupt.h>
+#include <linux/irq.h>
 #include <linux/irqchip/arm-gic-v3.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
+#include <linux/of_irq.h>
 #include <linux/psci.h>
 #include <linux/sched/clock.h>
 #include <linux/suspend.h>
@@ -51,7 +58,9 @@
 
 #define MTK_SIP_KERNEL_SPM_SUSPEND_ARGS		0xc200021a
 #define MTK_SIP_KERNEL_SPM_FIRMWARE_STATUS	0xc200021b
+#define MTK_SIP_KERNEL_SPM_IRQ0_HANDLER		0xc200021c
 #define MTK_SIP_KERNEL_SPM_LEGACY_SLEEP		0xc200021f
+#define MTK_SIP_KERNEL_SPM_VCOREFS_ARGS		0xc2000220
 #define MTK_SIP_KERNEL_SPM_ARGS			0xc2000228
 #define MTK_SIP_KERNEL_SPM_GET_PWR_CTRL_ARGS	0xc2000229
 
@@ -60,6 +69,17 @@
 #define SPM_ARGS_SUSPEND		2
 #define SPM_ARGS_SUSPEND_FINISH		3
 #define SPM_ARGS_PCM_WDT		8
+
+/* MTK_SIP_KERNEL_SPM_VCOREFS_ARGS commands */
+#define VCOREFS_SMC_CMD_FW_INIT		0	/* current Vcore OPP */
+#define VCOREFS_SMC_CMD_FW_RUN		1	/* SPM flags */
+#define VCORE_BOOT_UP_OPP		0
+
+/* SPM_FLAG_RUN_COMMON_SCENARIO | SPM_FLAG_DIS_VCORE_DVS | _DFS */
+#define SPM_FW_FLAGS_NO_DVFS		0x418
+
+/* SPM registers */
+#define SPM_IRQ_STA			0x158
 
 /* SPM_GET_PWR_CTRL_ARGS: scenario and field */
 #define SPM_PWR_CTRL_SUSPEND		17
@@ -131,6 +151,7 @@ struct mt8183_spm {
 	void __iomem *mbox;
 	void __iomem *mbox_irq;
 	void __iomem *mcdi;
+	void __iomem *spm_base;
 	u32 pcm_flags;
 	u32 pcm_flags1;
 	u32 timer_val;
@@ -184,6 +205,25 @@ static unsigned long mt8183_spm_smc(unsigned long fid, unsigned long a1,
 
 	arm_smccc_smc(fid, a1, a2, a3, 0, 0, 0, 0, &res);
 	return res.a0;
+}
+
+/* As MediaTek's spm_irq0_handler(): TF-A clears the status we pass back */
+static irqreturn_t mt8183_spm_irq(int irq, void *data)
+{
+	u32 isr = readl(spm.spm_base + SPM_IRQ_STA);
+
+	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_IRQ0_HANDLER, isr, 0, 0);
+	return IRQ_HANDLED;
+}
+
+/* The GIC INTID behind a Linux interrupt (under the sysirq inverter) */
+static u32 mt8183_spm_irq_intid(unsigned int irq)
+{
+	struct irq_data *d = irq_get_irq_data(irq);
+
+	while (d && d->parent_data)
+		d = d->parent_data;
+	return d ? irqd_to_hwirq(d) : 0;
 }
 
 /* Send one SPM command to the SSPM and wait for its answer */
@@ -376,7 +416,7 @@ static int mt8183_spm_suspend_enter(suspend_state_t state)
 	mt8183_spm_crumb(STEP_FIRMWARE_RETURN, ret);
 	mt8183_spm_gic_restore();
 	mt8183_spm_crumb(STEP_GIC_RESTORED, 0);
-	pr_info("back from suspend (method %u): %d\n", spm.method, ret);
+	pr_debug("back from suspend (method %u): %d\n", spm.method, ret);
 
 	mt8183_spm_crumb(STEP_SSPM_RESUME, mt8183_spm_sspm_cmd_time(SPM_RESUME));
 	mt8183_spm_crumb(STEP_WDT_OFF,
@@ -419,7 +459,8 @@ static void __init mt8183_spm_crumbs_init(struct device_node *np)
 static int __init mt8183_spm_suspend_init(void)
 {
 	struct device_node *np;
-	u32 fw_idx;
+	u32 fw_idx, fw_flags = SPM_FW_FLAGS_NO_DVFS;
+	unsigned int irq;
 	int ret;
 
 	np = of_find_compatible_node(NULL, NULL, "mediatek,mt8183-vendor-spm");
@@ -438,13 +479,14 @@ static int __init mt8183_spm_suspend_init(void)
 	spm.no_gic_mask = of_property_read_bool(np, "mediatek,no-gic-mask");
 	spm.no_mcdi_pause = of_property_read_bool(np, "mediatek,no-mcdi-pause");
 	spm.no_sspm = of_property_read_bool(np, "mediatek,no-sspm");
-	if (!of_property_read_u32(np, "mediatek,spm-irq-spi", &spm.spm_irq))
-		spm.spm_irq += 32;
+	of_property_read_u32(np, "mediatek,spm-fw-flags", &fw_flags);
 	mt8183_spm_crumbs_init(np);
 	spm.mbox = of_iomap(np, 0);
 	spm.mbox_irq = of_iomap(np, 1);
+	spm.spm_base = of_iomap(np, 2);
+	irq = irq_of_parse_and_map(np, 0);
 	of_node_put(np);
-	if (ret || !spm.mbox || !spm.mbox_irq) {
+	if (ret || !spm.mbox || !spm.mbox_irq || !spm.spm_base || !irq) {
 		pr_err("incomplete DT node\n");
 		ret = -EINVAL;
 		goto err_unmap;
@@ -473,15 +515,29 @@ static int __init mt8183_spm_suspend_init(void)
 	/* Which of the SPM firmwares (per DRAM type and rate) to run */
 	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_ARGS, SPM_ARGS_SPMFW_IDX, fw_idx, 0);
 
+	/* Start it, without Vcore DVFS, which nothing here drives */
+	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, VCOREFS_SMC_CMD_FW_INIT,
+		       VCORE_BOOT_UP_OPP, 0);
+	mt8183_spm_smc(MTK_SIP_KERNEL_SPM_VCOREFS_ARGS, VCOREFS_SMC_CMD_FW_RUN,
+		       fw_flags, 0);
+
+	/* Left enabled while asleep: the SPM wakes CPU0 with it */
+	ret = request_irq(irq, mt8183_spm_irq, IRQF_NO_SUSPEND, "mt8183-spm", NULL);
+	if (ret) {
+		pr_err("can't get the SPM interrupt: %d\n", ret);
+		goto err_unmap;
+	}
+	spm.spm_irq = mt8183_spm_irq_intid(irq);
+
 	if (spm.crumbs)
 		cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN, "soc/mt8183-spm:dead",
 					  NULL, mt8183_spm_cpu_dead);
 
 	suspend_set_ops(&mt8183_spm_suspend_ops);
 
-	pr_info("deep suspend via vendor SPM (firmware %u, method %u, state %#x, flags %#x/%#x, timer %#x, wake sources %#lx%s%s%s)\n",
-		fw_idx, spm.method, spm.psci_state, spm.pcm_flags, spm.pcm_flags1,
-		spm.timer_val,
+	pr_info("deep suspend via vendor SPM (firmware %u flags %#x, SPM IRQ %u, method %u, state %#x, flags %#x/%#x, timer %#x, wake sources %#lx%s%s%s)\n",
+		fw_idx, fw_flags, spm.spm_irq, spm.method, spm.psci_state,
+		spm.pcm_flags, spm.pcm_flags1, spm.timer_val,
 		mt8183_spm_smc(MTK_SIP_KERNEL_SPM_GET_PWR_CTRL_ARGS,
 			       SPM_PWR_CTRL_SUSPEND, PWR_WAKE_SRC, 0),
 		spm.no_gic_mask ? ", no GIC mask" : "",
@@ -490,6 +546,8 @@ static int __init mt8183_spm_suspend_init(void)
 	return 0;
 
 err_unmap:
+	if (spm.spm_base)
+		iounmap(spm.spm_base);
 	if (spm.gicd)
 		iounmap(spm.gicd);
 	if (spm.mcdi)
