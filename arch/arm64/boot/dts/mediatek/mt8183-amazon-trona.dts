@@ -722,12 +722,11 @@
 		/* LPDDR4X, 2 channels, 3200 MT/s: SPMFW_LP4X_2CH_3200 */
 		mediatek,spm-firmware-index = <1>;
 		/*
-		 * DIS_INFRA_PDN | DIS_VCORE_DVS | DIS_VCORE_DFS | DIS_ATF_ABORT |
-		 * SUSPEND_OPTION. MediaTek's flags power infra down too, but
-		 * then the USB controller and PHY come back blank and USB
-		 * doesn't reconnect.
+		 * MediaTek's: DIS_VCORE_DVS | DIS_VCORE_DFS | DIS_ATF_ABORT |
+		 * SUSPEND_OPTION. Infra is powered down too; the USB and
+		 * thermal drivers set their (reset) controllers up again.
 		 */
-		mediatek,pcm-flags = <0x0008009a>;
+		mediatek,pcm-flags = <0x00080098>;
 		/* BIG_BUCK_OFF_ENABLE | BIG_BUCK_ON_ENABLE: vproc11 stays on */
 		mediatek,pcm-flags1 = <0x300>;
 		/* PCM timer wake-up: 36 h (32768 Hz ticks), MediaTek's limit */
