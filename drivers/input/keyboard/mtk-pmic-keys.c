@@ -141,6 +141,7 @@ struct mtk_pmic_keys_info {
 	int irq;
 	int irq_r; /* optional: release irq if different */
 	bool wakeup:1;
+	bool suspended;
 };
 
 struct mtk_pmic_keys {
@@ -213,6 +214,22 @@ static irqreturn_t mtk_pmic_keys_irq_handler_thread(int irq, void *data)
 
 	pressed = !key_deb;
 
+	/*
+	 * As gpio-keys does: after a suspend that powers the SoC down, a
+	 * short press that woke the system is over by the time this runs,
+	 * and a lone release of a key never seen down is dropped. Report
+	 * the press, once, or userspace (a greeter lighting the screen on
+	 * input) never sees it.
+	 */
+	if (READ_ONCE(info->suspended)) {
+		WRITE_ONCE(info->suspended, false);
+		if (!pressed &&
+		    !test_bit(info->keycode, info->keys->input_dev->key)) {
+			input_report_key(info->keys->input_dev, info->keycode, 1);
+			input_sync(info->keys->input_dev);
+		}
+	}
+
 	input_report_key(info->keys->input_dev, info->keycode, pressed);
 	input_sync(info->keys->input_dev);
 
@@ -269,6 +286,7 @@ static int mtk_pmic_keys_suspend(struct device *dev)
 
 	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++) {
 		if (keys->keys[index].wakeup) {
+			WRITE_ONCE(keys->keys[index].suspended, true);
 			enable_irq_wake(keys->keys[index].irq);
 			if (keys->keys[index].irq_r > 0)
 				enable_irq_wake(keys->keys[index].irq_r);
@@ -294,8 +312,20 @@ static int mtk_pmic_keys_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_SIMPLE_DEV_PM_OPS(mtk_pmic_keys_pm_ops, mtk_pmic_keys_suspend,
-				mtk_pmic_keys_resume);
+/* Woken by something else: the key's next event is a real one */
+static void mtk_pmic_keys_complete(struct device *dev)
+{
+	struct mtk_pmic_keys *keys = dev_get_drvdata(dev);
+	int index;
+
+	for (index = 0; index < MTK_PMIC_MAX_KEY_COUNT; index++)
+		WRITE_ONCE(keys->keys[index].suspended, false);
+}
+
+static const struct dev_pm_ops mtk_pmic_keys_pm_ops = {
+	SYSTEM_SLEEP_PM_OPS(mtk_pmic_keys_suspend, mtk_pmic_keys_resume)
+	.complete = pm_sleep_ptr(mtk_pmic_keys_complete),
+};
 
 static const struct of_device_id of_mtk_pmic_keys_match_tbl[] = {
 	{
