@@ -577,7 +577,7 @@ static int mtu3_resume_common(struct device *dev, pm_message_t msg)
 	 * probe does; the device side is set up again on resume (peripheral
 	 * mode only).
 	 */
-	if (msg.event == PM_EVENT_RESUME &&
+	if (!PMSG_IS_AUTO(msg) &&
 	    mtu3_readl(ssusb->ippc_base, U3D_SSUSB_IP_PW_CTRL0) & SSUSB_IP_SW_RST) {
 		dev_info(dev, "controller reset over suspend, setting it up again\n");
 		ssusb_ip_sw_reset(ssusb);
