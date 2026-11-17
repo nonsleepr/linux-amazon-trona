@@ -714,17 +714,24 @@
 	 */
 	sspm-mailbox@10460000 {
 		compatible = "mediatek,mt8183-vendor-spm";
-		reg = <0 0x10460000 0 0x100>, <0 0x10461000 0 0x8>;
+		/* SSPM mailbox 1 data and IRQ registers, the SPM itself */
+		reg = <0 0x10460000 0 0x100>, <0 0x10461000 0 0x8>,
+		      <0 0x10006000 0 0x1000>;
+		/* The SPM's interrupt; it wakes CPU0, so it stays unmasked */
+		interrupts = <GIC_SPI 187 IRQ_TYPE_LEVEL_LOW>;
 		/* LPDDR4X, 2 channels, 3200 MT/s: SPMFW_LP4X_2CH_3200 */
 		mediatek,spm-firmware-index = <1>;
-		/* DIS_VCORE_DVS | DIS_VCORE_DFS | DIS_ATF_ABORT | SUSPEND_OPTION */
-		mediatek,pcm-flags = <0x00080098>;
+		/*
+		 * DIS_INFRA_PDN | DIS_VCORE_DVS | DIS_VCORE_DFS | DIS_ATF_ABORT |
+		 * SUSPEND_OPTION. MediaTek's flags power infra down too, but
+		 * then the USB controller and PHY come back blank and USB
+		 * doesn't reconnect.
+		 */
+		mediatek,pcm-flags = <0x0008009a>;
 		/* BIG_BUCK_OFF_ENABLE | BIG_BUCK_ON_ENABLE: vproc11 stays on */
 		mediatek,pcm-flags1 = <0x300>;
-		/* PCM timer wake-up after 60 s (32768 Hz ticks) */
-		mediatek,timer-val = <0x1e0000>;
-		/* The SPM's interrupt, the one SPI left unmasked while asleep */
-		mediatek,spm-irq-spi = <187>;
+		/* PCM timer wake-up: 36 h (32768 Hz ticks), MediaTek's limit */
+		mediatek,timer-val = <0xfd200000>;
 		/* Bring-up: breadcrumbs in the unused vendor ram_console area */
 		mediatek,breadcrumbs = <0x54408000>;
 	};
