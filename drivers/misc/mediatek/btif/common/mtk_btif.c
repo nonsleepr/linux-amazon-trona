@@ -41,7 +41,7 @@
 
 /*-----------static function declearation----------------*/
 static int mtk_btif_probe(struct platform_device *pdev);
-static int mtk_btif_remove(struct platform_device *pdev);
+static void mtk_btif_remove(struct platform_device *pdev);
 static int mtk_btif_suspend(struct platform_device *pdev, pm_message_t state);
 static int mtk_btif_resume(struct platform_device *pdev);
 static int mtk_btif_drv_resume(struct device *dev);
@@ -53,7 +53,7 @@ static int btif_file_open(struct inode *pinode, struct file *pfile);
 static int btif_file_release(struct inode *pinode, struct file *pfile);
 static ssize_t btif_file_read(struct file *pfile,
 			      char __user *buf, size_t count, loff_t *f_ops);
-static unsigned int btif_poll(struct file *filp, poll_table *wait);
+static __poll_t btif_poll(struct file *filp, poll_table *wait);
 #endif
 static int _btif_irq_reg(P_MTK_BTIF_IRQ_STR p_irq,
 		  mtk_btif_irq_handler irq_handler, void *data);
@@ -61,14 +61,14 @@ static int _btif_irq_free(P_MTK_BTIF_IRQ_STR p_irq, void *data);
 static int _btif_irq_ctrl(P_MTK_BTIF_IRQ_STR p_irq, bool en);
 static int _btif_irq_ctrl_sync(P_MTK_BTIF_IRQ_STR p_irq, bool en);
 static irqreturn_t btif_irq_handler(int irq, void *data);
-static unsigned int btif_pio_rx_data_receiver(P_MTK_BTIF_INFO_STR p_btif_info,
+static unsigned int btif_pio_rx_data_receiver(void *p_btif_info,
 				       unsigned char *p_buf,
 				       unsigned int buf_len);
 
 static irqreturn_t btif_tx_dma_irq_handler(int irq, void *data);
 static irqreturn_t btif_rx_dma_irq_handler(int irq, void *data);
 
-static unsigned int btif_dma_rx_data_receiver(P_MTK_DMA_INFO_STR p_dma_info,
+static unsigned int btif_dma_rx_data_receiver(void *p_dma_info,
 				       unsigned char *p_buf,
 				       unsigned int buf_len);
 static int _btif_controller_tx_setup(p_mtk_btif p_btif);
@@ -204,16 +204,17 @@ int g_enable_btif_rxd_test;
 #endif
 static int mtk_btif_dbg_lvl = BTIF_LOG_INFO;
 #if BTIF_RXD_BE_BLOCKED_DETECT
-static struct timeval btif_rxd_time_stamp[MAX_BTIF_RXD_TIME_REC];
+static struct timespec64 btif_rxd_time_stamp[MAX_BTIF_RXD_TIME_REC];
 #endif
 /*-----------Platform bus related structures----------------*/
 #define DRV_NAME "mtk_btif"
 
 #ifdef CONFIG_OF
 const struct of_device_id apbtif_of_ids[] = {
-	{ .compatible = "mediatek,btif", },
+	{ .compatible = "mediatek,mt8183-btif", },
 	{}
 };
+MODULE_DEVICE_TABLE(of, apbtif_of_ids);
 #endif
 
 const struct dev_pm_ops mtk_btif_drv_pm_ops = {
@@ -232,6 +233,8 @@ struct platform_driver mtk_btif_dev_drv = {
 	.driver = {
 			.name = DRV_NAME,
 			.owner = THIS_MODULE,
+			/* BTIF_init() uses what mtk_btif_probe() has stored */
+			.probe_type = PROBE_FORCE_SYNCHRONOUS,
 #ifdef CONFIG_PM
 			.pm = &mtk_btif_drv_pm_ops,
 #endif
@@ -262,13 +265,12 @@ static int mtk_btif_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int mtk_btif_remove(struct platform_device *pdev)
+static void mtk_btif_remove(struct platform_device *pdev)
 {
 /*Chaozhong: ToDo: to be implement*/
 	BTIF_INFO_FUNC("DO BTIF REMOVE\n");
 	platform_set_drvdata(pdev, NULL);
 	g_btif[0].private_data = NULL;
-	return 0;
 }
 
 int _btif_suspend(p_mtk_btif p_btif)
@@ -506,7 +508,7 @@ static int btif_chrdev_init(void)
 	}
 	BTIF_INFO_FUNC("add btif dev to kernel succeed\n");
 
-	p_btif_class = class_create(THIS_MODULE, p_btif_dev_name);
+	p_btif_class = class_create(p_btif_dev_name);
 	if (IS_ERR(p_btif_class)) {
 		BTIF_ERR_FUNC("error happened when doing class_create\n");
 		unregister_chrdev_region(btif_dev, 1);
@@ -539,9 +541,9 @@ void btif_rx_notify_cb(void)
 	BTIF_DBG_FUNC("--\n");
 }
 
-unsigned int btif_poll(struct file *filp, poll_table *wait)
+__poll_t btif_poll(struct file *filp, poll_table *wait)
 {
-	unsigned int mask = 0;
+	__poll_t mask = 0;
 	unsigned int ava_len = 0;
 /* btif_bbs_read(&(g_btif[0].btif_buf), rd_buf, sizeof(rd_buf)); */
 	unsigned int wr_idx = g_btif[0].btif_buf.wr_idx;
@@ -555,12 +557,12 @@ unsigned int btif_poll(struct file *filp, poll_table *wait)
 		ava_len = BBS_COUNT_CUR(&(g_btif[0].btif_buf), wr_idx);
 /* btif_bbs_read(&(g_btif[0].btif_buf), rd_buf, sizeof(rd_buf)); */
 		if (ava_len)
-			mask |= POLLIN | POLLRDNORM;	/* readable */
+			mask |= EPOLLIN | EPOLLRDNORM;	/* readable */
 	} else {
-		mask |= POLLIN | POLLRDNORM;	/* readable */
+		mask |= EPOLLIN | EPOLLRDNORM;	/* readable */
 	}
 /*make for writable*/
-	mask |= POLLOUT | POLLWRNORM;	/* writable */
+	mask |= EPOLLOUT | EPOLLWRNORM;	/* writable */
 	BTIF_INFO_FUNC("--, mask:%d\n", mask);
 	return mask;
 }
@@ -753,7 +755,7 @@ static ssize_t driver_flag_set(struct device_driver *drv,
 		return -1;
 	}
 
-	strncpy(buf, buffer, count);
+	strscpy(buf, buffer, sizeof(buf));
 	buf[count] = '\0';
 	BTIF_INFO_FUNC("buffer = %s, count = %zd\n", buf, count);
 	p_buf = buf;
@@ -882,7 +884,8 @@ static ssize_t driver_flag_set(struct device_driver *drv,
 	return count;
 }
 
-static DRIVER_ATTR(flag, S_IRUGO | S_IWUSR, driver_flag_read, driver_flag_set);
+static struct driver_attribute driver_attr_flag =
+	__ATTR(flag, S_IRUGO | S_IWUSR, driver_flag_read, driver_flag_set);
 
 /*-----------End of platform bus related operation APIs------------*/
 
@@ -1079,7 +1082,7 @@ irqreturn_t btif_rx_dma_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-unsigned int btif_dma_rx_data_receiver(P_MTK_DMA_INFO_STR p_dma_info,
+unsigned int btif_dma_rx_data_receiver(void *p_dma_info,
 				       unsigned char *p_buf,
 				       unsigned int buf_len)
 {
@@ -1098,7 +1101,7 @@ unsigned int btif_dma_rx_data_receiver(P_MTK_DMA_INFO_STR p_dma_info,
 	return 0;
 }
 
-unsigned int btif_pio_rx_data_receiver(P_MTK_BTIF_INFO_STR p_btif_info,
+unsigned int btif_pio_rx_data_receiver(void *p_btif_info,
 				       unsigned char *p_buf,
 				       unsigned int buf_len)
 {
@@ -1300,8 +1303,7 @@ int _btif_rx_dma_setup(p_mtk_btif p_btif)
 /*hardware init*/
 	hal_btif_dma_hw_init(p_dma_info);
 
-	hal_btif_dma_rx_cb_reg(p_dma_info,
-			       (dma_rx_buf_write) btif_dma_rx_data_receiver);
+	hal_btif_dma_rx_cb_reg(p_dma_info, btif_dma_rx_data_receiver);
 
 /*DMA controller enable*/
 	i_ret = hal_btif_dma_ctrl(p_dma_info, DMA_CTRL_ENABLE);
@@ -1463,8 +1465,7 @@ int _btif_controller_setup(p_mtk_btif p_btif)
 /* memset(p_btif->rx_buf, 0, BTIF_RX_BUFFER_SIZE); */
 	BBS_INIT(&(p_btif->btif_buf));
 /************************************************/
-	hal_btif_rx_cb_reg(p_btif_info,
-			   (btif_rx_buf_write) btif_pio_rx_data_receiver);
+	hal_btif_rx_cb_reg(p_btif_info, btif_pio_rx_data_receiver);
 
 	i_ret = hal_btif_clk_ctrl(p_btif_info, CLK_OUT_ENABLE);
 	if (i_ret) {
@@ -1740,16 +1741,17 @@ int _btif_enter_dpidle_from_on(p_mtk_btif p_btif)
 	unsigned int retry = 0;
 	unsigned int wait_period = 1;
 	unsigned int max_retry = MAX_WAIT_TIME_MS / wait_period;
-	struct timeval timer_start;
-	struct timeval timer_now;
+	struct timespec64 timer_start;
+	struct timespec64 timer_now;
 
-	do_gettimeofday(&timer_start);
+	ktime_get_real_ts64(&timer_start);
 
 	while ((!_btif_is_tx_complete(p_btif)) && (retry < max_retry)) {
-		do_gettimeofday(&timer_now);
+		ktime_get_real_ts64(&timer_now);
 		if ((MAX_WAIT_TIME_MS/1000) <= (timer_now.tv_sec - timer_start.tv_sec)) {
 			BTIF_WARN_FUNC("max retry timer expired, timer_start.tv_sec:%d, timer_now.tv_sec:%d,",
-				"retry:%d\n", timer_start.tv_sec, timer_now.tv_sec, retry);
+				"retry:%d\n", (int)timer_start.tv_sec,
+				(int)timer_now.tv_sec, retry);
 			break;
 		}
 		msleep(wait_period);
@@ -1880,9 +1882,9 @@ static int _btif_vfifo_init(p_mtk_btif_dma p_dma)
 	}
 
 /*vFIFO memory allocation*/
-	p_vfifo->p_vir_addr = dma_zalloc_coherent(dev,
-						  p_vfifo->vfifo_size,
-						  &p_vfifo->phy_addr, GFP_DMA | GFP_DMA32);
+	p_vfifo->p_vir_addr = dma_alloc_coherent(dev,
+						 p_vfifo->vfifo_size,
+						 &p_vfifo->phy_addr, GFP_DMA | GFP_DMA32);
 	if (p_vfifo->p_vir_addr == NULL) {
 		BTIF_ERR_FUNC("alloc vFIFO memory for BTIF failed\n");
 		return E_BTIF_FAIL;
@@ -2178,29 +2180,33 @@ static int mtk_btif_rxd_be_blocked_by_timer(void)
 	int ret = 0;
 	int counter = 0;
 	unsigned int i;
-	struct timeval now;
+	struct timespec64 now;
+	long now_usec;
+	long stamp_usec;
 	int time_gap[MAX_BTIF_RXD_TIME_REC];
 
-	do_gettimeofday(&now);
+	ktime_get_real_ts64(&now);
+	now_usec = now.tv_nsec / NSEC_PER_USEC;
 
 	for (i = 0; i < MAX_BTIF_RXD_TIME_REC; i++) {
+		stamp_usec = btif_rxd_time_stamp[i].tv_nsec / NSEC_PER_USEC;
 		BTIF_INFO_FUNC("btif_rxd_time_stamp[%d]=%d.%d\n", i,
-			btif_rxd_time_stamp[i].tv_sec, btif_rxd_time_stamp[i].tv_usec);
+			(int)btif_rxd_time_stamp[i].tv_sec, (int)stamp_usec);
 		if (now.tv_sec >= btif_rxd_time_stamp[i].tv_sec) {
 			time_gap[i] = now.tv_sec - btif_rxd_time_stamp[i].tv_sec;
 			time_gap[i] *= 1000000; /*second*/
-			if (now.tv_usec >= btif_rxd_time_stamp[i].tv_usec)
-				time_gap[i] += now.tv_usec - btif_rxd_time_stamp[i].tv_usec;
+			if (now_usec >= stamp_usec)
+				time_gap[i] += now_usec - stamp_usec;
 			else
-				time_gap[i] += 1000000 - now.tv_usec + btif_rxd_time_stamp[i].tv_usec;
+				time_gap[i] += 1000000 - now_usec + stamp_usec;
 
 			if (time_gap[i] > 1000000)
 				counter++;
 			BTIF_INFO_FUNC("time_gap[%d]=%d,counter:%d\n", i, time_gap[i], counter);
 		} else {
 			time_gap[i] = 0;
-			BTIF_ERR_FUNC("abnormal case now:%d < time_stamp[%d]:%d\n", now.tv_sec,
-							i, btif_rxd_time_stamp[i].tv_usec);
+			BTIF_ERR_FUNC("abnormal case now:%d < time_stamp[%d]:%d\n", (int)now.tv_sec,
+							i, (int)stamp_usec);
 		}
 	}
 	if (counter > (MAX_BTIF_RXD_TIME_REC - 2))
@@ -2286,7 +2292,7 @@ static int btif_rx_thread(void *p_data)
 			break;
 		}
 #if BTIF_RXD_BE_BLOCKED_DETECT
-		do_gettimeofday(&btif_rxd_time_stamp[i]);
+		ktime_get_real_ts64(&btif_rxd_time_stamp[i]);
 		i++;
 		if (i >= MAX_BTIF_RXD_TIME_REC)
 			i = 0;
@@ -2478,18 +2484,8 @@ static int _btif_rx_btm_init(p_mtk_btif p_btif)
 		}
 
 #if ENABLE_BTIF_RX_THREAD_RT_SCHED
-		{
-			int i_ret = -1;
-			int policy = SCHED_FIFO;
-			struct sched_param param;
-
-			param.sched_priority = MAX_RT_PRIO - 20;
-			i_ret = sched_setscheduler(p_btif->p_task, policy, &param);
-			if (i_ret != 0)
-				BTIF_WARN_FUNC("set RT to btif_rxd workqueue failed\n");
-			else
-				BTIF_INFO_FUNC("set RT to btif_rxd workqueue succeed\n");
-		}
+		sched_set_fifo(p_btif->p_task);
+		BTIF_INFO_FUNC("set RT to btif_rxd workqueue succeed\n");
 #endif
 
 		wake_up_process(p_btif->p_task);
@@ -2619,7 +2615,8 @@ unsigned int btif_bbs_write(p_btif_buf_str p_bbs,
 		    ("no empty space left for write, (%d)ava_len, (%d)to write\n",
 		     ava_len, buf_len);
 		hal_btif_dump_reg(p_btif->p_btif_info, REG_ALL);
-		hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
+		if (p_btif->rx_mode == BTIF_MODE_DMA)
+			hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
 		return 0;
 	}
 
@@ -2627,7 +2624,8 @@ unsigned int btif_bbs_write(p_btif_buf_str p_bbs,
 		BTIF_ERR_FUNC("BTIF overrun, (%d)empty, (%d)needed\n",
 			      emp_len, buf_len);
 		hal_btif_dump_reg(p_btif->p_btif_info, REG_ALL);
-		hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
+		if (p_btif->rx_mode == BTIF_MODE_DMA)
+			hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
 		_btif_dump_memory("<DMA Rx vFIFO>", p_buf, buf_len);
 	}
 
@@ -2635,7 +2633,8 @@ unsigned int btif_bbs_write(p_btif_buf_str p_bbs,
 		BTIF_WARN_FUNC("buf_len too long, (%d)ava_len, (%d)to write\n",
 			       ava_len, buf_len);
 		hal_btif_dump_reg(p_btif->p_btif_info, REG_ALL);
-		hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
+		if (p_btif->rx_mode == BTIF_MODE_DMA)
+			hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
 		_btif_dump_memory("<DMA Rx vFIFO>", p_buf, buf_len);
 	}
 
@@ -2647,7 +2646,8 @@ unsigned int btif_bbs_write(p_btif_buf_str p_bbs,
 			       BBS_COUNT(p_bbs));
 		btif_dump_bbs_str("Rx buffer tooo long", p_bbs);
 		hal_btif_dump_reg(p_btif->p_btif_info, REG_ALL);
-		hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
+		if (p_btif->rx_mode == BTIF_MODE_DMA)
+			hal_dma_dump_reg(p_btif->p_rx_dma->p_dma_info, REG_ALL);
 		_btif_dump_memory("<DMA Rx vFIFO>", p_buf, buf_len);
 		BBS_INIT(p_bbs);
 	}
@@ -2929,10 +2929,10 @@ int btif_log_buf_dmp_in(P_BTIF_LOG_QUEUE_T p_log_que, const char *p_buf,
 {
 	P_BTIF_LOG_BUF_T p_log_buf = NULL;
 	char *dir = NULL;
-	struct timeval *p_timer = NULL;
+	struct timespec64 *p_timer = NULL;
 	unsigned long flags;
 	bool output_flag = false;
-	struct timespec *p_ts = NULL;
+	struct timespec64 *p_ts = NULL;
 
 	BTIF_DBG_FUNC("++\n");
 
@@ -2955,8 +2955,8 @@ int btif_log_buf_dmp_in(P_BTIF_LOG_QUEUE_T p_log_que, const char *p_buf,
 	p_ts = &p_log_buf->ts;
 
 /*log time stamp*/
-	do_gettimeofday(p_timer);
-	*p_ts = ktime_to_timespec(ktime_get());
+	ktime_get_real_ts64(p_timer);
+	*p_ts = ktime_to_timespec64(ktime_get());
 
 /*record data information including length and content*/
 	p_log_buf->len = len;
@@ -2976,7 +2976,8 @@ int btif_log_buf_dmp_in(P_BTIF_LOG_QUEUE_T p_log_que, const char *p_buf,
 /*check if log dynamic output function is enabled or not*/
 	if (output_flag) {
 		pr_debug("BTIF-DBG, dir:%s, %d.%ds(%lld.%.9ld) len:%d\n",
-			 dir, (int)p_timer->tv_sec, (int)p_timer->tv_usec,
+			 dir, (int)p_timer->tv_sec,
+			 (int)(p_timer->tv_nsec / NSEC_PER_USEC),
 			 (long long)p_ts->tv_sec, p_ts->tv_nsec, len);
 /*output buffer content*/
 		btif_dump_data((char *)p_buf, len);
@@ -2995,8 +2996,8 @@ static void btif_log_buf_dmp_out_work(struct work_struct *work)
 	unsigned int len = 0;
 	unsigned int pkt_count = 0;
 	unsigned char *p_dir = NULL;
-	struct timeval *p_timer = NULL;
-	struct timespec *p_ts = NULL;
+	struct timespec64 *p_timer = NULL;
+	struct timespec64 *p_ts = NULL;
 	int i;
 
 	if (p_log_que == NULL || p_log_que->p_dump_queue == NULL)
@@ -3020,7 +3021,7 @@ static void btif_log_buf_dmp_out_work(struct work_struct *work)
 			p_dir,
 			pkt_count++,
 			(int)p_timer->tv_sec,
-			(int)p_timer->tv_usec,
+			(int)(p_timer->tv_nsec / NSEC_PER_USEC),
 			(long long)p_ts->tv_sec,
 			p_ts->tv_nsec, len);
 		/*output buffer content*/
@@ -3221,6 +3222,16 @@ static int BTIF_init(void)
 		goto err_exit1;
 	}
 
+/*
+ * this used to run at boot, when the device had always been probed by now;
+ * as a module, don't go on to take the resources of a device that isn't there
+ */
+	if (g_btif[0].private_data == NULL) {
+		pr_err("btif: no BTIF device was probed\n");
+		platform_driver_unregister(&mtk_btif_dev_drv);
+		return -ENODEV;
+	}
+
 	i_ret = driver_create_file(&mtk_btif_dev_drv.driver, &driver_attr_flag);
 	if (i_ret)
 		BTIF_ERR_FUNC("BTIF pdriver_create_file failed, ret(%d)\n", i_ret);
@@ -3230,14 +3241,14 @@ static int BTIF_init(void)
 		p_btif_buffer = kmalloc(BTIF_RX_BUFFER_SIZE, GFP_ATOMIC);
 		if (!p_btif_buffer) {
 			BTIF_ERR_FUNC("p_btif_buffer kmalloc memory fail\n");
-			return -1;
+			goto err_exit2;
 		}
 		BTIF_INFO_FUNC("p_btif_buffer get memory 0x%p\n", p_btif_buffer);
 		p_tx_queue = kmalloc_array(BTIF_LOG_ENTRY_NUM, sizeof(BTIF_LOG_BUF_T), GFP_ATOMIC);
 		if (!p_tx_queue) {
 			BTIF_ERR_FUNC("p_tx_queue kmalloc memory fail\n");
 			kfree(p_btif_buffer);
-			return -1;
+			goto err_exit2;
 		}
 		BTIF_INFO_FUNC("p_tx_queue get memory 0x%p\n", p_tx_queue);
 		p_rx_queue = kmalloc_array(BTIF_LOG_ENTRY_NUM, sizeof(BTIF_LOG_BUF_T), GFP_ATOMIC);
@@ -3245,7 +3256,7 @@ static int BTIF_init(void)
 			BTIF_ERR_FUNC("p_rx_queue kmalloc memory fail\n");
 			kfree(p_btif_buffer);
 			kfree(p_tx_queue);
-			return -1;
+			goto err_exit2;
 		}
 		BTIF_INFO_FUNC("p_rx_queue get memory 0x%p\n", p_rx_queue);
 
@@ -3493,11 +3504,17 @@ int btif_rx_data_path_unlock(p_mtk_btif p_btif)
 
 int btif_rx_dma_has_pending_data(p_mtk_btif p_btif)
 {
+/*no Rx DMA channel in PIO mode, same as a channel that is not enabled*/
+	if (p_btif->rx_mode != BTIF_MODE_DMA)
+		return E_BTIF_FAIL;
 	return hal_dma_rx_has_pending(p_btif->p_rx_dma->p_dma_info);
 }
 
 int btif_tx_dma_has_pending_data(p_mtk_btif p_btif)
 {
+/*no Tx DMA channel in PIO mode, same as a channel that is not enabled*/
+	if (p_btif->tx_mode != BTIF_MODE_DMA)
+		return E_BTIF_FAIL;
 	return hal_dma_tx_has_pending(p_btif->p_tx_dma->p_dma_info);
 }
 

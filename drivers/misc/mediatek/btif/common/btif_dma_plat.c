@@ -99,7 +99,11 @@ static MTK_DMA_INFO_STR mtk_btif_rx_dma = {
 	.p_vfifo = &(mtk_rx_dma_vfifo.vfifo),
 };
 
-static spinlock_t g_clk_cg_spinlock;	/*dma clock's spinlock */
+/*
+ * dma clock's spinlock. hal_rx_dma_lock() takes it in PIO mode too, where
+ * hal_btif_dma_info_get() has not run to initialise it
+ */
+static DEFINE_SPINLOCK(g_clk_cg_spinlock);
 
 /************************************Function declearation***********************************/
 static int _is_tx_dma_in_flush(P_MTK_DMA_INFO_STR p_dma_info);
@@ -701,8 +705,8 @@ int hal_tx_dma_irq_handler(P_MTK_DMA_INFO_STR p_dma_info)
 	unsigned int left_len = 0;
 	unsigned long base = p_dma_info->base;
 	static int flush_irq_counter;
-	static struct timeval start_timer;
-	static struct timeval end_timer;
+	static struct timespec64 start_timer;
+	static struct timespec64 end_timer;
 	unsigned long flag = 0;
 
 	spin_lock_irqsave(&(g_clk_cg_spinlock), flag);
@@ -721,12 +725,12 @@ int hal_tx_dma_irq_handler(P_MTK_DMA_INFO_STR p_dma_info)
 	valid_size = BTIF_READ32(TX_DMA_VFF_VALID_SIZE(base));
 	left_len = BTIF_READ32(TX_DMA_VFF_LEFT_SIZE(base));
 	if (flush_irq_counter == 0)
-		do_gettimeofday(&start_timer);
+		ktime_get_real_ts64(&start_timer);
 	if ((valid_size > 0) && (valid_size < 8)) {
 		i_ret = _tx_dma_flush(p_dma_info);
 		flush_irq_counter++;
 		if (flush_irq_counter >= MAX_CONTINIOUS_TIMES) {
-			do_gettimeofday(&end_timer);
+			ktime_get_real_ts64(&end_timer);
 /*
  * when btif tx fifo cannot accept any data and counts of bytes left in tx vfifo < 8 for a while
  * we assume that btif cannot send data for a long time
@@ -742,9 +746,10 @@ int hal_tx_dma_irq_handler(P_MTK_DMA_INFO_STR p_dma_info)
 			    ("**********************ERROR, ERROR, ERROR**************************\n");
 			BTIF_ERR_FUNC
 			    ("BTIF Tx IRQ happened %d times (continiously), between %d.%d and %d.%d\n",
-			     MAX_CONTINIOUS_TIMES, start_timer.tv_sec,
-			     start_timer.tv_usec, end_timer.tv_usec,
-			     end_timer.tv_usec);
+			     MAX_CONTINIOUS_TIMES, (int)start_timer.tv_sec,
+			     (int)(start_timer.tv_nsec / NSEC_PER_USEC),
+			     (int)(end_timer.tv_nsec / NSEC_PER_USEC),
+			     (int)(end_timer.tv_nsec / NSEC_PER_USEC));
 		}
 	} else if (vff_len == left_len) {
 		flush_irq_counter = 0;

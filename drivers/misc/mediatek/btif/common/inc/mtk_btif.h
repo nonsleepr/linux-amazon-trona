@@ -31,9 +31,8 @@
 #include <linux/fs.h>
 #include <linux/uaccess.h>
 #include <linux/string.h>
-#include <linux/time.h>		/* gettimeofday */
+#include <linux/timekeeping.h>
 #include <asm-generic/bug.h>
-#include <linux/irqchip/mtk-gic-extend.h> /* for mt_irq_dump_status() */
 
 #include "btif_pub.h"
 #include "btif_dma_pub.h"
@@ -190,8 +189,8 @@ typedef void (*MTK_BTIF_RX_NOTIFY) (void);
 
 typedef struct _btif_log_buf_t_ {
 	unsigned int len;
-	struct timeval timer;
-	struct timespec ts;
+	struct timespec64 timer;
+	struct timespec64 ts;
 	unsigned char buffer[BTIF_LOG_SZ];
 } BTIF_LOG_BUF_T, *P_BTIF_LOG_BUF_T;
 

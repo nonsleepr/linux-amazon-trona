@@ -25,7 +25,6 @@
 #include <linux/slab.h>
 #include <linux/sched.h>
 #include <linux/sched/rt.h>
-#include <mtk_io.h>
 
 #ifdef CONFIG_OF
 #include <linux/of_irq.h>
