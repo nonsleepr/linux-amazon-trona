@@ -323,6 +323,7 @@ static struct cfg80211_ops mtk_wlan_ops = {
 	.set_pmksa = mtk_cfg80211_set_pmksa,
 	.del_pmksa = mtk_cfg80211_del_pmksa,
 	.flush_pmksa = mtk_cfg80211_flush_pmksa,
+	.external_auth = mtk_cfg80211_external_auth,
 #ifdef CFG_ENABLE_GTK_FRAME_FILTER
 	.set_rekey_data = mtk_cfg80211_set_rekey_data,
 #endif
@@ -622,7 +623,9 @@ static const struct ieee80211_txrx_stypes
 	},
 	[NL80211_IFTYPE_STATION] = {
 		.tx = 0xffff,
-		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) | BIT(IEEE80211_STYPE_PROBE_REQ >> 4)
+		/* Authentication: of SAE, which user space does, see kalExternalAuthRequest() */
+		.rx = BIT(IEEE80211_STYPE_ACTION >> 4) | BIT(IEEE80211_STYPE_PROBE_REQ >> 4) |
+		      BIT(IEEE80211_STYPE_AUTH >> 4)
 	},
 	[NL80211_IFTYPE_AP] = {
 		.tx = 0xffff,
@@ -2283,6 +2286,8 @@ static void createWirelessDevice(void)
 	prWiphy->features |= NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR;
 	prWiphy->features |= NL80211_FEATURE_SCHED_SCAN_RANDOM_MAC_ADDR;
 #endif
+	/* SAE by external authentication: mtk_cfg80211_external_auth() */
+	prWiphy->features |= NL80211_FEATURE_SAE;
 	prWiphy->max_remain_on_channel_duration = 5000;
 	prWiphy->mgmt_stypes = mtk_cfg80211_ais_default_mgmt_stypes;
 	prWiphy->vendor_commands = mtk_wlan_vendor_ops;

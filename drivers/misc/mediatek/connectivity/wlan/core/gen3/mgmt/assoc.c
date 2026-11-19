@@ -245,6 +245,88 @@ UINT_16 assocBuildCapabilityInfo(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T prS
 
 /*----------------------------------------------------------------------------*/
 /*!
+* @brief This function tells if the RSN IE of the (Re)Association Request is
+*        the one among the IEs that were kept of the connect request (SAE only,
+*        see wlanoidSetAssocIEs()). It is when user space asked for Open System
+*        authentication, which it does for a PMKSA whose PMKID is in that IE,
+*        and the JOIN has not gone on to SAE.
+*
+* @param[in] prStaRec       Pointer to the STA_RECORD_T of the AP
+*
+* @retval TRUE   assocGenerateConnIE() sends the RSN IE of user space
+* @retval FALSE  rsnGenerateRSNIE() is to compose the RSN IE
+*/
+/*----------------------------------------------------------------------------*/
+BOOLEAN assocUseConnRsnIE(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T prStaRec)
+{
+	P_CONNECTION_SETTINGS_T prConnSettings = &(prAdapter->rWifiVar.rConnSettings);
+	PUINT_8 pucIE = prConnSettings->aucAssocIEs;
+	UINT_16 u2Offset;
+
+	if (prConnSettings->eAuthMode != AUTH_MODE_OPEN || prStaRec->ucAuthAlgNum == AUTH_ALGORITHM_NUM_SAE)
+		return FALSE;
+
+	IE_FOR_EACH(pucIE, prConnSettings->u2AssocIeLen, u2Offset) {
+		if (IE_ID(pucIE) == ELEM_ID_RSN)
+			return TRUE;
+	}
+
+	return FALSE;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+* @brief This function appends the IEs of the connect request to the
+*        (Re)Association Request Frame of an SAE connection. They are the ones
+*        of user space as they are: its RSNXE, on which SAE with hash-to-element
+*        relies, and its RSN IE with the PMKID when it asked for Open System
+*        authentication with a cached PMK, see assocUseConnRsnIE(). Otherwise
+*        the RSN IE is left to rsnGenerateRSNIE(), and the extended capabilities
+*        are always the ones of rlmReqGenerateExtCapIE().
+*
+* @param[in] prStaRec       Pointer to the STA_RECORD_T of the AP
+* @param[in] prMsduInfo     Pointer to the composed MSDU_INFO_T.
+*
+* @return (none)
+*/
+/*----------------------------------------------------------------------------*/
+static VOID
+assocGenerateConnIE(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T prStaRec, IN OUT P_MSDU_INFO_T prMsduInfo)
+{
+	P_CONNECTION_SETTINGS_T prConnSettings = &(prAdapter->rWifiVar.rConnSettings);
+	PUINT_8 pucIE = prConnSettings->aucAssocIEs;
+	PUINT_8 pucBuffer, cp;
+	UINT_16 u2Offset;
+	BOOLEAN fgUseConnRsnIE;
+
+	if (!prConnSettings->u2AssocIeLen)
+		return;
+
+	fgUseConnRsnIE = assocUseConnRsnIE(prAdapter, prStaRec);
+
+	pucBuffer = (PUINT_8) ((ULONG) prMsduInfo->prPacket + (ULONG) prMsduInfo->u2FrameLength);
+	cp = pucBuffer;
+
+	IE_FOR_EACH(pucIE, prConnSettings->u2AssocIeLen, u2Offset) {
+		if (IE_ID(pucIE) == ELEM_ID_EXTENDED_CAP)
+			continue;
+		if (IE_ID(pucIE) == ELEM_ID_RSN && !fgUseConnRsnIE)
+			continue;
+
+		kalMemCopy(cp, pucIE, IE_SIZE(pucIE));
+		cp += IE_SIZE(pucIE);
+	}
+
+	prMsduInfo->u2FrameLength += (UINT_16) (cp - pucBuffer);
+
+	DBGLOG(SAA, INFO, "SAE: %u of %u bytes of connect IEs in (Re)Assoc Req, AuthAlg %u, RSN IE %s\n",
+	       (UINT_32) (cp - pucBuffer), prConnSettings->u2AssocIeLen, prStaRec->ucAuthAlgNum,
+	       fgUseConnRsnIE ? "of user space" : "of driver");
+	DBGLOG_MEM8(SAA, TRACE, pucBuffer, (UINT_32) (cp - pucBuffer));
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
 * @brief This function is used to compose Common Information Elements for Association
 *        Request Frame.
 *
@@ -372,6 +454,9 @@ __KAL_INLINE__ VOID assocBuildReAssocReqFrameCommonIEs(IN P_ADAPTER_T prAdapter,
 			pucBuffer += IE_SIZE(pucBuffer);
 		}
 	}
+
+	if (IS_STA_IN_AIS(prStaRec))
+		assocGenerateConnIE(prAdapter, prStaRec, prMsduInfo);
 
 }				/* end of assocBuildReAssocReqFrameCommonIEs() */
 
@@ -563,6 +648,10 @@ WLAN_STATUS assocSendReAssocReqFrame(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T
 	ASSERT(prStaRec->ucBssIndex <= MAX_BSS_INDEX);
 
 	u2EstimatedFrameLen += u2EstimatedExtraIELen;
+
+	/* assocGenerateConnIE() */
+	if (IS_STA_IN_AIS(prStaRec))
+		u2EstimatedFrameLen += prAdapter->rWifiVar.rConnSettings.u2AssocIeLen;
 
 	/* Allocate a MSDU_INFO_T */
 	prMsduInfo = cnmMgtPktAlloc(prAdapter, u2EstimatedFrameLen);

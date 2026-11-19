@@ -160,6 +160,7 @@ typedef enum _ENUM_PARAM_AUTH_MODE_T {
 	AUTH_MODE_WPA2_PSK,
 	AUTH_MODE_WPA2_FT, /* Fast Bss Transition for 802.1x */
 	AUTH_MODE_WPA2_FT_PSK, /* Fast Bss Transition for WPA2 PSK */
+	AUTH_MODE_WPA3_SAE,	/* 11: the firmware has it as 10, see nicUpdateBss() */
 	AUTH_MODE_NUM		/*!< Upper bound, not real case */
 } ENUM_PARAM_AUTH_MODE_T, *P_ENUM_PARAM_AUTH_MODE_T;
 
@@ -240,6 +241,13 @@ typedef struct _PARAM_CONNECT_T {
 	UINT_8 *pucBssid;
 	UINT_32 u4CenterFreq;
 } PARAM_CONNECT_T, *P_PARAM_CONNECT_T;
+
+/* The result of an authentication that was left to user space (SAE) */
+struct PARAM_EXTERNAL_AUTH {
+	UINT_8 bssid[PARAM_MAC_ADDR_LEN];
+	UINT_16 status;
+	UINT_8 ucBssIdx;
+};
 
 /* This is enum defined for user to select an AdHoc Mode */
 typedef enum _ENUM_PARAM_AD_HOC_MODE_T {
@@ -1920,6 +1928,14 @@ wlanoidQueryPmkid(IN P_ADAPTER_T prAdapter,
 
 WLAN_STATUS
 wlanoidSetPmkid(IN P_ADAPTER_T prAdapter, IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen);
+
+WLAN_STATUS
+wlanoidSetAssocIEs(IN P_ADAPTER_T prAdapter,
+		   IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen);
+
+WLAN_STATUS
+wlanoidExternalAuthDone(IN P_ADAPTER_T prAdapter,
+			IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen);
 
 WLAN_STATUS
 wlanoidQuerySupportedRates(IN P_ADAPTER_T prAdapter,

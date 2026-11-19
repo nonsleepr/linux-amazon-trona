@@ -1559,6 +1559,7 @@ wlanoidSetAuthMode(IN P_ADAPTER_T prAdapter,
 	case AUTH_MODE_WPA2_PSK:
 	case AUTH_MODE_WPA2_FT:
 	case AUTH_MODE_WPA2_FT_PSK:
+	case AUTH_MODE_WPA3_SAE:
 		/* infrastructure mode only */
 		if (prAdapter->rWifiVar.rConnSettings.eOPMode != NET_TYPE_INFRA)
 			return WLAN_STATUS_NOT_ACCEPTED;
@@ -2160,6 +2161,8 @@ wlanoidSetAddKey(IN P_ADAPTER_T prAdapter, IN PVOID pvSetBuffer, IN UINT_32 u4Se
 	P_WLAN_TABLE_T prWlanTable;
 	P_STA_RECORD_T prStaRec = NULL;
 	BOOL fgAddTxBcKey = FALSE;
+	BOOL fgIsRsn;
+	UINT_32 u4AkmIndex;
 
 #if CFG_SUPPORT_TDLS
 	P_STA_RECORD_T prTmpStaRec;
@@ -2233,8 +2236,20 @@ wlanoidSetAddKey(IN P_ADAPTER_T prAdapter, IN PVOID pvSetBuffer, IN UINT_32 u4Se
 	prAisSpecBssInfo = &prAdapter->rWifiVar.rAisSpecificBssInfo;
 	prBssInfo = prAdapter->prAisBssInfo;
 
-	if (prAdapter->rWifiVar.rConnSettings.eAuthMode >= AUTH_MODE_WPA &&
-	    prAdapter->rWifiVar.rConnSettings.eAuthMode != AUTH_MODE_WPA_NONE) {
+	/*
+	 * The keys of a WPA/RSN connection are per peer. An SAE connection that was
+	 * authenticated with Open System (cached PMK) is one of those, and it comes
+	 * as AUTH_MODE_OPEN with the SAE AKM enabled, see mtk_cfg80211_connect().
+	 */
+	fgIsRsn = (prAdapter->rWifiVar.rConnSettings.eAuthMode >= AUTH_MODE_WPA &&
+		   prAdapter->rWifiVar.rConnSettings.eAuthMode != AUTH_MODE_WPA_NONE);
+	if (prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_OPEN &&
+	    rsnSearchAKMSuite(prAdapter, RSN_AKM_SUITE_SAE, &u4AkmIndex)) {
+		DBGLOG(OID, INFO, "Notice WPA3 reconnect with OPEN Auth\n");
+		fgIsRsn = TRUE;
+	}
+
+	if (fgIsRsn) {
 		if ((prNewKey->arBSSID[0] & prNewKey->arBSSID[1] & prNewKey->arBSSID[2] &
 		     prNewKey->arBSSID[3] & prNewKey->arBSSID[4] & prNewKey->arBSSID[5]) == 0xFF) {
 			prStaRec = cnmGetStaRecByAddress(prAdapter, prBssInfo->ucBssIndex, prBssInfo->aucBSSID);
@@ -2329,7 +2344,7 @@ wlanoidSetAddKey(IN P_ADAPTER_T prAdapter, IN PVOID pvSetBuffer, IN UINT_32 u4Se
 	} else if (prNewKey->u4KeyLength == 13) {
 		prCmdKey->ucAlgorithmId = CIPHER_SUITE_WEP104;
 	} else if (prNewKey->u4KeyLength == 16) {
-		if (prAdapter->rWifiVar.rConnSettings.eAuthMode < AUTH_MODE_WPA)
+		if (prAdapter->rWifiVar.rConnSettings.eAuthMode < AUTH_MODE_WPA && !fgIsRsn)
 			prCmdKey->ucAlgorithmId = CIPHER_SUITE_WEP128;
 		else {
 #if CFG_SUPPORT_802_11W
@@ -2389,9 +2404,7 @@ wlanoidSetAddKey(IN P_ADAPTER_T prAdapter, IN PVOID pvSetBuffer, IN UINT_32 u4Se
 	{
 		if ((prCmdKey->aucPeerAddr[0] & prCmdKey->aucPeerAddr[1] & prCmdKey->aucPeerAddr[2] & prCmdKey->
 		     aucPeerAddr[3] & prCmdKey->aucPeerAddr[4] & prCmdKey->aucPeerAddr[5]) == 0xFF) {
-			if (prAdapter->rWifiVar.rConnSettings.eAuthMode >= AUTH_MODE_WPA
-			    && prAdapter->rWifiVar.rConnSettings.eAuthMode != AUTH_MODE_WPA_NONE
-			    && 1 /* Connected */) {
+			if (fgIsRsn && 1 /* Connected */) {
 				prStaRec = cnmGetStaRecByAddress(prAdapter, prBssInfo->ucBssIndex, prBssInfo->aucBSSID);
 				ASSERT(prStaRec);	/* AIS RSN Group key, addr is BC addr */
 				kalMemCopy(prCmdKey->aucPeerAddr, prStaRec->aucMacAddr, MAC_ADDR_LEN);
@@ -3235,6 +3248,127 @@ wlanoidSetPmkid(IN P_ADAPTER_T prAdapter, IN PVOID pvSetBuffer, IN UINT_32 u4Set
 	return WLAN_STATUS_SUCCESS;
 
 }				/* wlanoidSetPmkid */
+
+/*----------------------------------------------------------------------------*/
+/*!
+* \brief This routine is called with the IEs of a connect request that are to
+*        be sent in the (Re)Association Request, see assocGenerateConnIE(). It is
+*        called for every connect request, without any IEs if none are to be
+*        sent: what an earlier connect request left is not for the next one.
+*
+* \param[in] prAdapter Pointer to the Adapter structure
+* \param[in] pvSetBuffer A pointer to the IEs, or NULL
+* \param[in] u4SetBufferLen The length of the IEs
+* \param[out] pu4SetInfoLen The number of bytes read from the set buffer
+*
+* \retval WLAN_STATUS_SUCCESS
+* \retval WLAN_STATUS_INVALID_LENGTH More IEs than are kept: none will be sent.
+*/
+/*----------------------------------------------------------------------------*/
+WLAN_STATUS
+wlanoidSetAssocIEs(IN P_ADAPTER_T prAdapter,
+		   IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen)
+{
+	P_CONNECTION_SETTINGS_T prConnSettings;
+
+	DEBUGFUNC("wlanoidSetAssocIEs");
+
+	ASSERT(prAdapter);
+	ASSERT(pu4SetInfoLen);
+
+	prConnSettings = &prAdapter->rWifiVar.rConnSettings;
+
+	*pu4SetInfoLen = u4SetBufferLen;
+
+	prConnSettings->u2AssocIeLen = 0;
+
+	if (!pvSetBuffer || u4SetBufferLen == 0)
+		return WLAN_STATUS_SUCCESS;
+
+	if (u4SetBufferLen > sizeof(prConnSettings->aucAssocIEs)) {
+		DBGLOG(OID, WARN, "SAE: %u bytes of connect IEs are more than %u, none in (Re)Assoc Req\n",
+		       u4SetBufferLen, (UINT_32) sizeof(prConnSettings->aucAssocIEs));
+		return WLAN_STATUS_INVALID_LENGTH;
+	}
+
+	kalMemCopy(prConnSettings->aucAssocIEs, pvSetBuffer, u4SetBufferLen);
+	prConnSettings->u2AssocIeLen = (UINT_16) u4SetBufferLen;
+
+	return WLAN_STATUS_SUCCESS;
+}				/* wlanoidSetAssocIEs */
+
+/*----------------------------------------------------------------------------*/
+/*!
+* \brief This routine is called with the result of an authentication that was
+*        left to user space (SAE), which kalExternalAuthRequest() asked for. SAA
+*        goes on with it: saaFsmRunEventExternalAuthDone().
+*
+* \param[in] prAdapter Pointer to the Adapter structure
+* \param[in] pvSetBuffer A pointer to a struct PARAM_EXTERNAL_AUTH
+* \param[in] u4SetBufferLen The length of the set buffer
+* \param[out] pu4SetInfoLen The number of bytes read from the set buffer
+*
+* \retval WLAN_STATUS_SUCCESS
+* \retval WLAN_STATUS_INVALID_DATA No authentication with this BSSID is going on.
+* \retval WLAN_STATUS_RESOURCES
+*/
+/*----------------------------------------------------------------------------*/
+WLAN_STATUS
+wlanoidExternalAuthDone(IN P_ADAPTER_T prAdapter,
+			IN PVOID pvSetBuffer, IN UINT_32 u4SetBufferLen, OUT PUINT_32 pu4SetInfoLen)
+{
+	P_STA_RECORD_T prStaRec;
+	P_BSS_DESC_T prBssDesc;
+	struct PARAM_EXTERNAL_AUTH *prParams;
+	struct MSG_SAA_EXTERNAL_AUTH_DONE *prExternalAuthMsg = NULL;
+	const UINT_8 aucZeroMacAddr[] = NULL_MAC_ADDR;
+
+	DEBUGFUNC("wlanoidExternalAuthDone");
+
+	ASSERT(prAdapter);
+	ASSERT(pu4SetInfoLen);
+
+	*pu4SetInfoLen = sizeof(struct PARAM_EXTERNAL_AUTH);
+
+	if (!pvSetBuffer || u4SetBufferLen < sizeof(struct PARAM_EXTERNAL_AUTH)) {
+		DBGLOG(OID, ERROR, "pvSetBuffer is NULL\n");
+		return WLAN_STATUS_INVALID_DATA;
+	}
+
+	prParams = (struct PARAM_EXTERNAL_AUTH *) pvSetBuffer;
+
+	if (!IS_BSS_INDEX_VALID(prParams->ucBssIdx)) {
+		DBGLOG(REQ, ERROR, "SAE-confirm failed with invalid BssIdx in ndev\n");
+		return WLAN_STATUS_INVALID_DATA;
+	}
+
+	prBssDesc = prAdapter->rWifiVar.rAisFsmInfo.prTargetBssDesc;
+	if (EQUAL_MAC_ADDR(prParams->bssid, aucZeroMacAddr) && prBssDesc) {
+		DBGLOG(OID, WARN, "BSSID is Null, Set as AIS target BSSID\n");
+		COPY_MAC_ADDR(prParams->bssid, prBssDesc->aucBSSID);
+	}
+
+	prStaRec = cnmGetStaRecByAddress(prAdapter, prParams->ucBssIdx, prParams->bssid);
+	if (!prStaRec) {
+		DBGLOG(REQ, WARN, "SAE-confirm failed with bssid:" MACSTR "\n", MAC2STR(prParams->bssid));
+		return WLAN_STATUS_INVALID_DATA;
+	}
+
+	prExternalAuthMsg = (struct MSG_SAA_EXTERNAL_AUTH_DONE *)
+	    cnmMemAlloc(prAdapter, RAM_TYPE_MSG, sizeof(struct MSG_SAA_EXTERNAL_AUTH_DONE));
+	if (!prExternalAuthMsg) {
+		DBGLOG(OID, WARN, "SAE-confirm failed to allocate Msg\n");
+		return WLAN_STATUS_RESOURCES;
+	}
+
+	prExternalAuthMsg->rMsgHdr.eMsgId = MID_OID_SAA_FSM_EXTERNAL_AUTH;
+	prExternalAuthMsg->prStaRec = prStaRec;
+	prExternalAuthMsg->status = prParams->status;
+
+	mboxSendMsg(prAdapter, MBOX_ID_0, (P_MSG_HDR_T) prExternalAuthMsg, MSG_SEND_METHOD_BUF);
+
+	return WLAN_STATUS_SUCCESS;
+}				/* wlanoidExternalAuthDone */
 
 /*----------------------------------------------------------------------------*/
 /*!

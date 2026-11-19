@@ -319,6 +319,7 @@
 #define AUTH_TYPE_OPEN_SYSTEM                       BIT(AUTH_ALGORITHM_NUM_OPEN_SYSTEM)
 #define AUTH_TYPE_SHARED_KEY                        BIT(AUTH_ALGORITHM_NUM_SHARED_KEY)
 #define AUTH_TYPE_FAST_BSS_TRANSITION               BIT(AUTH_ALGORITHM_NUM_FAST_BSS_TRANSITION)
+#define AUTH_TYPE_SAE                               BIT(AUTH_ALGORITHM_NUM_SAE)
 
 /* Authentication Retry Limit */
 #define TX_AUTH_ASSOCI_RETRY_LIMIT                  2
@@ -748,10 +749,17 @@ typedef enum _ENUM_BSS_TYPE_T {
 
 #define MAX_NUM_SUPPORTED_CIPHER_SUITES 8	/* max number of supported cipher suites */
 #if CFG_SUPPORT_802_11W
-#define MAX_NUM_SUPPORTED_AKM_SUITES    10	/* max number of supported AKM suites */
+#define MAX_NUM_SUPPORTED_AKM_SUITES    11	/* max number of supported AKM suites */
 #else
-#define MAX_NUM_SUPPORTED_AKM_SUITES    8	/* max number of supported AKM suites */
+#define MAX_NUM_SUPPORTED_AKM_SUITES    9	/* max number of supported AKM suites */
 #endif
+
+/*
+ * What is kept of the IEs of a connect request for the (Re)Association Request
+ * (SAE only). The IEs of that frame are reported to cfg80211 in a buffer of
+ * CFG_CFG80211_IE_BUF_LEN, together with the ones the driver composes.
+ */
+#define MAX_LEN_OF_CONNECT_IES          256
 
 /* Structure of RSN Information */
 typedef struct _RSN_INFO_T {

@@ -500,6 +500,7 @@ WLAN_STATUS authCheckTxAuthFrame(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMs
 WLAN_STATUS authCheckRxAuthFrameTransSeq(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb)
 {
 	P_WLAN_AUTH_FRAME_T prAuthFrame;
+	P_STA_RECORD_T prStaRec;
 	UINT_16 u2RxTransactionSeqNum;
 	UINT_16 u2MinPayloadLen;
 
@@ -507,6 +508,24 @@ WLAN_STATUS authCheckRxAuthFrameTransSeq(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T
 
 	/* 4 <1> locate the Authentication Frame. */
 	prAuthFrame = (P_WLAN_AUTH_FRAME_T) prSwRfb->pvHeader;
+
+	/*
+	 * While user space authenticates (SAE), the frames of the AP are for it and
+	 * not for AAA: both the commit and the confirm of SAE come with transaction
+	 * sequence numbers 1 and 2, and what else is in them is not looked at here.
+	 */
+	if (prAdapter->prAisBssInfo) {
+		prStaRec = cnmGetStaRecByIndex(prAdapter, prSwRfb->ucStaRecIdx);
+		/* as saaFsmRunEventRxAuth() will, find it by address when the frame came without WTBL index */
+		if (!prStaRec && prSwRfb->u2PacketLen >= WLAN_MAC_MGMT_HEADER_LEN)
+			prStaRec = cnmGetStaRecByAddress(prAdapter, prAdapter->prAisBssInfo->ucBssIndex,
+							 prAuthFrame->aucSrcAddr);
+		if (prStaRec && IS_STA_IN_AIS(prStaRec) &&
+		    prStaRec->eAuthAssocState == SAA_STATE_EXTERNAL_AUTH) {
+			saaFsmRunEventRxAuth(prAdapter, prSwRfb);
+			return WLAN_STATUS_SUCCESS;
+		}
+	}
 
 	/* 4 <2> Parse the Header of Authentication Frame. */
 	u2MinPayloadLen = (AUTH_ALGORITHM_NUM_FIELD_LEN +

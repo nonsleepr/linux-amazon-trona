@@ -69,6 +69,8 @@
 /*----------------------------------------------------------------------------*/
 WLAN_STATUS assocSendReAssocReqFrame(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T prStaRec);
 
+BOOLEAN assocUseConnRsnIE(IN P_ADAPTER_T prAdapter, IN P_STA_RECORD_T prStaRec);
+
 WLAN_STATUS assocCheckTxReAssocReqFrame(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo);
 
 WLAN_STATUS assocCheckTxReAssocRespFrame(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo);

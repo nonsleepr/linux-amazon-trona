@@ -267,6 +267,9 @@ int mtk_cfg80211_del_pmksa(struct wiphy *wiphy, struct net_device *ndev, struct 
 
 int mtk_cfg80211_flush_pmksa(struct wiphy *wiphy, struct net_device *ndev);
 
+int mtk_cfg80211_external_auth(struct wiphy *wiphy, struct net_device *ndev,
+			       struct cfg80211_external_auth_params *params);
+
 int mtk_cfg80211_set_rekey_data(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_gtk_rekey_data *data);
 
 int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,

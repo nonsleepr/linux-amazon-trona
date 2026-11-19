@@ -272,6 +272,7 @@ enum {
 #define IW_AUTH_KEY_MGMT_PSK_SHA256 8
 #endif
 #define IW_AUTH_ALG_FT			0x00000008
+#define IW_AUTH_ALG_SAE			0x00000010
 
 /*******************************************************************************
 *                            P U B L I C   D A T A

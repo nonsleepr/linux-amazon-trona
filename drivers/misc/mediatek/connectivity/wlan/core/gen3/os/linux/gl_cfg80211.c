@@ -856,6 +856,35 @@ void mtk_cfg80211_abort_scan(struct wiphy *wiphy,
 
 static UINT_8 wepBuf[48];
 
+#if CFG_SUPPORT_802_11W
+/*----------------------------------------------------------------------------*/
+/*!
+ * @brief This routine tells if the RSN IE among the IEs of a connect request
+ *        says that user space is capable of management frame protection
+ *
+ * @retval TRUE: MFPC is set in the RSN capabilities
+ */
+/*----------------------------------------------------------------------------*/
+static BOOLEAN mtk_cfg80211_ie_mfp_capable(P_ADAPTER_T prAdapter, const u8 *ie, size_t ie_len)
+{
+	const u8 *prRsnIe;
+	RSN_INFO_T rRsnInfo;
+
+	if (!ie || !ie_len)
+		return FALSE;
+
+	prRsnIe = cfg80211_find_ie(WLAN_EID_RSN, ie, ie_len);
+	if (!prRsnIe)
+		return FALSE;
+
+	kalMemZero(&rRsnInfo, sizeof(rRsnInfo));
+	if (!rsnParseRsnIE(prAdapter, (P_RSN_INFO_ELEM_T) prRsnIe, &rRsnInfo))
+		return FALSE;
+
+	return (rRsnInfo.u2RsnCap & ELEM_WPA_CAP_MFPC) ? TRUE : FALSE;
+}
+#endif
+
 /*----------------------------------------------------------------------------*/
 /*!
  * @brief This routine is responsible for requesting to connect to
@@ -953,9 +982,18 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 	/* DBGLOG(SCN, INFO, ("MFP=%d\n", prGlueInfo->rWpaInfo.u4Mfp)); */
 #endif
 
+	DBGLOG(REQ, INFO, "sme: Flag=%08x Type=%x Ver=%x Na=%d Akm=%08x Nc=%d Pri=%d Mfp=%d Len=%zu\n",
+	       sme->flags, sme->auth_type, sme->crypto.wpa_versions, sme->crypto.n_akm_suites,
+	       sme->crypto.n_akm_suites ? sme->crypto.akm_suites[0] : 0,
+	       sme->crypto.n_ciphers_pairwise, sme->privacy, sme->mfp, sme->ie_len);
+
+	/*
+	 * RSN is NL80211_WPA_VERSION_3 as well: wpa_supplicant has that, and that
+	 * alone, for the SAE AKM where the kernel knows about it.
+	 */
 	if (sme->crypto.wpa_versions & NL80211_WPA_VERSION_1)
 		prGlueInfo->rWpaInfo.u4WpaVersion = IW_AUTH_WPA_VERSION_WPA;
-	else if (sme->crypto.wpa_versions & NL80211_WPA_VERSION_2)
+	else if (sme->crypto.wpa_versions & (NL80211_WPA_VERSION_2 | NL80211_WPA_VERSION_3))
 		prGlueInfo->rWpaInfo.u4WpaVersion = IW_AUTH_WPA_VERSION_WPA2;
 	else
 		prGlueInfo->rWpaInfo.u4WpaVersion = IW_AUTH_WPA_VERSION_DISABLED;
@@ -969,6 +1007,9 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 		break;
 	case NL80211_AUTHTYPE_FT:
 		prGlueInfo->rWpaInfo.u4AuthAlg = IW_AUTH_ALG_FT;
+		break;
+	case NL80211_AUTHTYPE_SAE:
+		prGlueInfo->rWpaInfo.u4AuthAlg = IW_AUTH_ALG_SAE;
 		break;
 	default:
 		prGlueInfo->rWpaInfo.u4AuthAlg = IW_AUTH_ALG_OPEN_SYSTEM | IW_AUTH_ALG_SHARED_KEY;
@@ -1074,12 +1115,48 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 				u4AkmSuite = RSN_AKM_SUITE_PSK_SHA256;
 				break;
 #endif
+			case WLAN_AKM_SUITE_SAE:
+				/*
+				 * SAE itself is done by user space, which SAA asks for with
+				 * AUTH_MODE_WPA3_SAE: kalExternalAuthRequest(). With a PMKSA
+				 * for the AP, user space wants Open System authentication and
+				 * has the PMKID in its RSN IE. That is AUTH_MODE_OPEN with the
+				 * SAE AKM, see rsnKeyMgmtWpa3(), from which the JOIN goes on
+				 * to SAE if the AP does not know the PMKID.
+				 */
+				if (sme->auth_type == NL80211_AUTHTYPE_SAE)
+					eAuthMode = AUTH_MODE_WPA3_SAE;
+				else
+					eAuthMode = AUTH_MODE_OPEN;
+				u4AkmSuite = RSN_AKM_SUITE_SAE;
+				break;
 			default:
-				DBGLOG(REQ, WARN, "invalid auth mode (%d)\n", eAuthMode);
+				DBGLOG(REQ, WARN, "invalid auth mode (%d), akm %08x\n", eAuthMode,
+				       sme->crypto.akm_suites[0]);
 				return -EINVAL;
 			}
 		}
+	} else {
+		/* the AKM of an earlier connection is not the one of this */
+		prConnSettings->rRsnInfo.au4AuthKeyMgtSuite[0] = 0;
 	}
+
+	if (u4AkmSuite == RSN_AKM_SUITE_SAE && !(sme->flags & CONNECT_REQ_EXTERNAL_AUTH_SUPPORT))
+		DBGLOG(REQ, WARN, "SAE: user space did not say that it can do external authentication\n");
+
+#if CFG_SUPPORT_802_11W
+	if (u4AkmSuite == RSN_AKM_SUITE_SAE) {
+		/*
+		 * SAE is to come with management frame protection wherever the AP can
+		 * do it. wpa_supplicant leaves NL80211_ATTR_USE_MFP out when PMF is
+		 * optional for it and the driver selects the BSS; its RSN IE tells.
+		 */
+		if (sme->mfp == NL80211_MFP_REQUIRED)
+			prGlueInfo->rWpaInfo.u4Mfp = IW_AUTH_MFP_REQUIRED;
+		else if (mtk_cfg80211_ie_mfp_capable(prGlueInfo->prAdapter, sme->ie, sme->ie_len))
+			prGlueInfo->rWpaInfo.u4Mfp = IW_AUTH_MFP_OPTIONAL;
+	}
+#endif
 
 	if (prGlueInfo->rWpaInfo.u4WpaVersion == IW_AUTH_WPA_VERSION_DISABLED) {
 		switch (prGlueInfo->rWpaInfo.u4AuthAlg) {
@@ -1184,6 +1261,19 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 #endif
 
 	}
+
+	/*
+	 * The IEs of user space go into the (Re)Association Request of an SAE
+	 * connection: its RSNXE, and its RSN IE with the PMKID when it wants Open
+	 * System authentication with a cached PMK. No other connection has them.
+	 */
+	if (u4AkmSuite == RSN_AKM_SUITE_SAE && sme->ie && sme->ie_len > 0)
+		rStatus = kalIoctl(prGlueInfo, wlanoidSetAssocIEs, (PVOID) sme->ie, sme->ie_len,
+				   FALSE, FALSE, FALSE, &u4BufLen);
+	else
+		rStatus = kalIoctl(prGlueInfo, wlanoidSetAssocIEs, NULL, 0, FALSE, FALSE, FALSE, &u4BufLen);
+	if (rStatus != WLAN_STATUS_SUCCESS)
+		DBGLOG(REQ, WARN, "set assoc IEs error:%x\n", rStatus);
 
 	/* clear WSC Assoc IE buffer in case WPS IE is not detected */
 	if (fgCarryWPSIE == FALSE) {
@@ -1559,6 +1649,46 @@ int mtk_cfg80211_flush_pmksa(struct wiphy *wiphy, struct net_device *ndev)
 	if (rStatus != WLAN_STATUS_SUCCESS)
 		DBGLOG(INIT, INFO, "flush pmkid error:%x\n", rStatus);
 	kalMemFree(prPmkid, VIR_MEM_TYPE, 8);
+
+	return 0;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+ * @brief This routine is told the result of the authentication that user
+ *        space was asked for with cfg80211_external_auth_request() (SAE)
+ *
+ * @param params: the BSSID, and an IEEE 802.11 status code
+ *
+ * @retval 0:       successful
+ *         others:  failure
+ */
+/*----------------------------------------------------------------------------*/
+int mtk_cfg80211_external_auth(struct wiphy *wiphy, struct net_device *ndev,
+			       struct cfg80211_external_auth_params *params)
+{
+	P_GLUE_INFO_T prGlueInfo = NULL;
+	WLAN_STATUS rStatus;
+	UINT_32 u4BufLen;
+	struct PARAM_EXTERNAL_AUTH rAuth;
+
+	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
+	ASSERT(prGlueInfo);
+
+	kalMemZero(&rAuth, sizeof(rAuth));
+	COPY_MAC_ADDR(rAuth.bssid, params->bssid);
+	rAuth.status = params->status;
+	rAuth.ucBssIdx = wlanGetBssIdx(ndev);
+
+	DBGLOG(REQ, INFO, "SAE: external auth with " MACSTR " done, status %u\n",
+	       MAC2STR(rAuth.bssid), rAuth.status);
+
+	rStatus = kalIoctl(prGlueInfo, wlanoidExternalAuthDone, (PVOID) &rAuth, sizeof(rAuth),
+			   FALSE, FALSE, FALSE, &u4BufLen);
+	if (rStatus != WLAN_STATUS_SUCCESS) {
+		DBGLOG(OID, ERROR, "SAE-confirm failed with: 0x%x\n", rStatus);
+		return -EINVAL;
+	}
 
 	return 0;
 }

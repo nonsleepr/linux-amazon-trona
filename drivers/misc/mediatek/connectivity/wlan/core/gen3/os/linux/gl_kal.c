@@ -1047,6 +1047,10 @@ kalIndicateStatusAndComplete(IN P_GLUE_INFO_T prGlueInfo, IN WLAN_STATUS eStatus
 		kalMemZero(&prGlueInfo->rFtIeForAssocTx,
 			   sizeof(prGlueInfo->rFtIeForAssocTx));
 
+		/* the IEs of the connect request are not for a connection after this one */
+		if (prGlueInfo->prAdapter)
+			prGlueInfo->prAdapter->rWifiVar.rConnSettings.u2AssocIeLen = 0;
+
 		prGlueInfo->eParamMediaStateIndicated = PARAM_MEDIA_STATE_DISCONNECTED;
 #if CFG_SUPPORT_RSSI_STATISTICS
 		if (prGlueInfo->prAdapter->prAisBssInfo) {
@@ -4231,6 +4235,113 @@ VOID kalIndicateRxMgmtFrame(IN P_GLUE_INFO_T prGlueInfo, IN P_SW_RFB_T prSwRfb)
 	} while (FALSE);
 
 }				/* kalIndicateRxMgmtFrame */
+
+/*
+ * cfg80211_external_auth_request() sends its event to the socket that owns the
+ * connection, and gives up if there is none. nl80211 notes the owner only when
+ * the connect request has returned from the driver, still with the wiphy mutex
+ * held; the main thread, where SAA runs, may be past the start of the JOIN by
+ * then. So the request is left to wiphy work, which runs with the mutex held
+ * and with that not before the owner is known.
+ */
+static DEFINE_SPINLOCK(rExternalAuthLock);
+static struct cfg80211_external_auth_params rExternalAuthParams;
+
+static void kalExternalAuthWork(struct wiphy *wiphy, struct wiphy_work *work)
+{
+	struct cfg80211_external_auth_params params;
+	struct wireless_dev *wdev;
+	ULONG ulFlags;
+	int ret = -ENODEV;
+
+	spin_lock_irqsave(&rExternalAuthLock, ulFlags);
+	params = rExternalAuthParams;
+	spin_unlock_irqrestore(&rExternalAuthLock, ulFlags);
+
+	/* the net device may be gone by now */
+	list_for_each_entry(wdev, &wiphy->wdev_list, list) {
+		if (wdev->iftype != NL80211_IFTYPE_STATION || !wdev->netdev)
+			continue;
+
+		ret = cfg80211_external_auth_request(wdev->netdev, &params, GFP_KERNEL);
+		break;
+	}
+
+	/* the JOIN timeout of AIS is what follows from this */
+	if (ret)
+		DBGLOG(SAA, ERROR, "SAE: external auth request failed %d\n", ret);
+}
+
+static struct wiphy_work rExternalAuthWork = {
+	.entry = LIST_HEAD_INIT(rExternalAuthWork.entry),
+	.func = kalExternalAuthWork,
+};
+
+/*----------------------------------------------------------------------------*/
+/*!
+* \brief    To ask user space to do the (SAE) authentication with the BSS that
+*           AIS is joining. It sends and gets the Authentication frames as any
+*           management frame, and mtk_cfg80211_external_auth() has the result.
+*
+* \param[in]
+*           prAdapter
+*           ucBssIndex
+*
+* \return
+*           WLAN_STATUS_SUCCESS: the request is on its way
+*/
+/*----------------------------------------------------------------------------*/
+WLAN_STATUS kalExternalAuthRequest(IN P_ADAPTER_T prAdapter, IN UINT_8 ucBssIndex)
+{
+	struct cfg80211_external_auth_params params;
+	P_CONNECTION_SETTINGS_T prConnSettings;
+	P_GLUE_INFO_T prGlueInfo;
+	P_BSS_DESC_T prBssDesc;
+	ULONG ulFlags;
+
+	if (!prAdapter) {
+		DBGLOG(SAA, ERROR, "prAdapter is NULL\n");
+		return WLAN_STATUS_INVALID_DATA;
+	}
+
+	prGlueInfo = prAdapter->prGlueInfo;
+	if (!prGlueInfo) {
+		DBGLOG(SAA, ERROR, "prAdapter->prGlueInfo is NULL\n");
+		return WLAN_STATUS_INVALID_DATA;
+	}
+
+	prBssDesc = prAdapter->rWifiVar.rAisFsmInfo.prTargetBssDesc;
+	if (!prBssDesc) {
+		DBGLOG(SAA, WARN, "SAE auth failed without prTargetBssDesc\n");
+		return WLAN_STATUS_INVALID_DATA;
+	}
+
+	prConnSettings = &prAdapter->rWifiVar.rConnSettings;
+
+	kalMemZero(&params, sizeof(params));
+	params.action = NL80211_EXTERNAL_AUTH_START;
+	COPY_MAC_ADDR(params.bssid, prBssDesc->aucBSSID);
+	/* user space looks its network up by the SSID: the one of the connect request for a hidden one */
+	if (prBssDesc->ucSSIDLen)
+		COPY_SSID(params.ssid.ssid, params.ssid.ssid_len, prBssDesc->aucSSID, prBssDesc->ucSSIDLen);
+	else
+		COPY_SSID(params.ssid.ssid, params.ssid.ssid_len, prConnSettings->aucSSID,
+			  prConnSettings->ucSSIDLen);
+	if (params.ssid.ssid_len > IEEE80211_MAX_SSID_LEN)
+		params.ssid.ssid_len = IEEE80211_MAX_SSID_LEN;
+	/* cfg80211 puts this one AKM on the wire the way wpa_supplicant has always wanted it */
+	params.key_mgmt_suite = WLAN_AKM_SUITE_SAE;
+
+	DBGLOG(AIS, INFO, "[WPA3] " MACSTR " Bss:%d SSID Len:%d Act:%d\n", MAC2STR(params.bssid),
+	       ucBssIndex, params.ssid.ssid_len, params.action);
+
+	spin_lock_irqsave(&rExternalAuthLock, ulFlags);
+	rExternalAuthParams = params;
+	spin_unlock_irqrestore(&rExternalAuthLock, ulFlags);
+	wiphy_work_queue(priv_to_wiphy(prGlueInfo), &rExternalAuthWork);
+
+	return WLAN_STATUS_SUCCESS;
+}				/* kalExternalAuthRequest */
 
 #if CFG_SUPPORT_SDIO_READ_WRITE_PATTERN
 /*----------------------------------------------------------------------------*/

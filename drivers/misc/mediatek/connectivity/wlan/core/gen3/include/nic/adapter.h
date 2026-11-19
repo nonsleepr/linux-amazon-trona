@@ -187,6 +187,10 @@ typedef struct _CONNECTION_SETTINGS_T {
 
 	/* for RSN info store, when upper layer set rsn info */
 	RSN_INFO_T rRsnInfo;
+
+	/* SAE: the IEs of the connect request, see assocGenerateConnIE() and wlanoidSetAssocIEs() */
+	UINT_16 u2AssocIeLen;
+	UINT_8 aucAssocIEs[MAX_LEN_OF_CONNECT_IES];
 #if CFG_SUPPORT_DETECT_SECURITY_MODE_CHANGE
 	BOOLEAN fgSecModeChangeStartTimer;
 #endif

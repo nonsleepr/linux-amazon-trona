@@ -660,6 +660,30 @@ BOOLEAN rsnSearchAKMSuite(IN P_ADAPTER_T prAdapter, IN UINT_32 u4AkmSuite, OUT P
 
 /*----------------------------------------------------------------------------*/
 /*!
+*
+* \brief This routine tells if the connection that is being set up is one with
+*        a WPA3 AKM (SAE). That is so with AUTH_MODE_WPA3_SAE, and as well with
+*        AUTH_MODE_OPEN when the SAE AKM is the enabled one: SAE with a cached
+*        PMK authenticates with Open System.
+*
+* \param[in]  eAuthMode  The authentication mode of the connection settings
+*
+* \retval TRUE  The RSN IE of the BSS is the one to go by.
+* \retval FALSE Not a WPA3 connection.
+*/
+/*----------------------------------------------------------------------------*/
+BOOLEAN rsnKeyMgmtWpa3(IN P_ADAPTER_T prAdapter, IN ENUM_PARAM_AUTH_MODE_T eAuthMode)
+{
+	UINT_32 u4AkmIndex;
+
+	if (eAuthMode == AUTH_MODE_WPA3_SAE)
+		return TRUE;
+
+	return rsnSearchAKMSuite(prAdapter, RSN_AKM_SUITE_SAE, &u4AkmIndex);
+}				/* rsnKeyMgmtWpa3 */
+
+/*----------------------------------------------------------------------------*/
+/*!
 * \brief This routine is called to perform RSNA or TSN policy
 *        selection for a given BSS.
 *
@@ -746,6 +770,7 @@ BOOLEAN rsnPerformPolicySelection(IN P_ADAPTER_T prAdapter, IN P_BSS_DESC_T prBs
 			return FALSE;
 		}
 	} else if (prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2 ||
+		   rsnKeyMgmtWpa3(prAdapter, prAdapter->rWifiVar.rConnSettings.eAuthMode) ||
 		   prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2_PSK
 		   || prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2_FT_PSK ||
 		   prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2_FT) {
@@ -1229,6 +1254,21 @@ VOID rsnGenerateWPAIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 
 }				/* rsnGenerateWPAIE */
 
+/* TRUE for the AKMs that have no PMKSA to cache: the PMK is the PSK */
+static BOOLEAN rsnIsPskAkm(UINT_32 u4AkmSuite)
+{
+	switch (u4AkmSuite) {
+	case RSN_AKM_SUITE_PSK:
+	case RSN_AKM_SUITE_FT_PSK:
+#if CFG_SUPPORT_802_11W
+	case RSN_AKM_SUITE_PSK_SHA256:
+#endif
+		return TRUE;
+	default:
+		return FALSE;
+	}
+}
+
 /*----------------------------------------------------------------------------*/
 /*!
 *
@@ -1250,7 +1290,7 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 	/* UINT_8                ucExpendedLen = 0; */
 	PUINT_8 pucBuffer;
 	UINT_8 ucBssIndex;
-	P_STA_RECORD_T prStaRec;
+	P_STA_RECORD_T prStaRec = NULL;
 	struct FT_IES *prFtIEs = NULL;
 
 	DEBUGFUNC("rsnGenerateRSNIE");
@@ -1277,6 +1317,21 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 		return;
 	}
 
+	/*
+	 * SAE with a PMKSA of user space authenticates with Open System, and is to
+	 * associate with the PMKID. That is in the RSN IE that came with the connect
+	 * request, and assocGenerateConnIE() has put that one into the frame already.
+	 * After an SAE authentication the RSN IE is composed here, without PMKID.
+	 */
+	if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS &&
+	    prAdapter->rWifiVar.rConnSettings.u2AssocIeLen) {
+		prStaRec = cnmGetStaRecByIndex(prAdapter, prMsduInfo->ucStaRecIndex);
+		if (prStaRec && assocUseConnRsnIE(prAdapter, prStaRec)) {
+			DBGLOG(RSN, INFO, "Use RSN IE from supplicant\n");
+			return;
+		}
+	}
+
 	if (
 #if CFG_ENABLE_WIFI_DIRECT
 		   ((prAdapter->fgIsP2PRegistered) &&
@@ -1290,6 +1345,7 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 		   (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType ==
 		    NETWORK_TYPE_AIS /* prCurrentBss->fgIERSN */  &&
 		    ((prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2)
+		     || rsnKeyMgmtWpa3(prAdapter, prAdapter->rWifiVar.rConnSettings.eAuthMode)
 		     || (prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2_PSK)
 		     || prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2_FT_PSK ||
 			prAdapter->rWifiVar.rConnSettings.eAuthMode == AUTH_MODE_WPA2_FT))) {
@@ -1332,8 +1388,14 @@ VOID rsnGenerateRSNIE(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo)
 		if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS)
 			prStaRec = cnmGetStaRecByIndex(prAdapter, prMsduInfo->ucStaRecIndex);
 
-		/* Pmk Id field */
+		/*
+		 * Pmk Id field: not after an SAE authentication, which has made a new
+		 * PMK, and not the PMKID that an SAE connection with this BSS has left
+		 * when this one is with a PSK.
+		 */
 		if (GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->eNetworkType == NETWORK_TYPE_AIS
+		    && prStaRec && prStaRec->ucAuthAlgNum != AUTH_ALGORITHM_NUM_SAE
+		    && !rsnIsPskAkm(GET_BSS_INFO_BY_INDEX(prAdapter, ucBssIndex)->u4RsnSelectedAKMSuite)
 		    && rsnSearchPmkidEntry(prAdapter, prStaRec->aucMacAddr, &u4Entry) &&
 		    prAdapter->rWifiVar.rAisSpecificBssInfo.arPmkidCache[u4Entry].fgPmkidExist) {
 			RSN_IE(pucBuffer)->ucLength = 38;
@@ -2434,6 +2496,7 @@ BOOLEAN rsnCheckSecurityModeChanged(P_ADAPTER_T prAdapter, P_BSS_INFO_T prBssInf
 	case AUTH_MODE_WPA2_PSK:
 	case AUTH_MODE_WPA2_FT:
 	case AUTH_MODE_WPA2_FT_PSK:
+	case AUTH_MODE_WPA3_SAE:
 		if (prBssDesc->fgIERSN)
 			return rsnCheckWpaRsnInfo(prBssInfo, &prBssDesc->rRSNInfo);
 		DBGLOG(RSN, INFO, "security change, WPA2->%s\n",

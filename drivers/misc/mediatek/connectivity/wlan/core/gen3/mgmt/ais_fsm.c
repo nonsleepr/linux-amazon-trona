@@ -243,6 +243,8 @@ VOID aisInitializeConnectionSettings(IN P_ADAPTER_T prAdapter, IN P_REG_INFO_T p
 	prConnSettings->rRsnInfo.u2RsnCap = 0;
 	prConnSettings->rRsnInfo.fgRsnCapPresent = FALSE;
 
+	prConnSettings->u2AssocIeLen = 0;
+
 }				/* end of aisFsmInitializeConnectionSettings() */
 
 /*----------------------------------------------------------------------------*/
@@ -498,6 +500,8 @@ VOID aisFsmStateInit_JOIN(IN P_ADAPTER_T prAdapter, P_BSS_DESC_T prBssDesc)
 	P_CONNECTION_SETTINGS_T prConnSettings;
 	P_STA_RECORD_T prStaRec;
 	P_MSG_JOIN_REQ_T prJoinReqMsg;
+	struct AIS_BLACKLIST_ITEM *prBlackList;
+	UINT_32 u4PmkidEntry = 0;
 
 	DEBUGFUNC("aisFsmStateInit_JOIN()");
 
@@ -528,10 +532,25 @@ VOID aisFsmStateInit_JOIN(IN P_ADAPTER_T prAdapter, P_BSS_DESC_T prBssDesc)
 		prStaRec->fgIsReAssoc = FALSE;
 
 		switch (prConnSettings->eAuthMode) {
+		case AUTH_MODE_OPEN:
+			/*
+			 * The SAE AKM with Open System authentication is what user space
+			 * asks for when it has a PMKSA for the AP. If the AP does not have
+			 * it any more, aisFsmStateInit_RetryJOIN() goes on with SAE.
+			 */
+			if (prConnSettings->rRsnInfo.au4AuthKeyMgtSuite[0] == WLAN_AKM_SUITE_SAE) {
+				DBGLOG(AIS, INFO, "JOIN INIT: eAuthMode == OPEN | SAE\n");
+				prAisFsmInfo->ucAvailableAuthTypes =
+				    (UINT_8) (AUTH_TYPE_OPEN_SYSTEM | AUTH_TYPE_SAE);
+			} else {
+				DBGLOG(AIS, INFO, "JOIN INIT: eAuthMode == OPEN\n");
+				prAisFsmInfo->ucAvailableAuthTypes = (UINT_8) AUTH_TYPE_OPEN_SYSTEM;
+			}
+			break;
+
 		case AUTH_MODE_NON_RSN_FT: /* FT initial mobility doamin association always use Open AA */
 		case AUTH_MODE_WPA2_FT:
 		case AUTH_MODE_WPA2_FT_PSK:
-		case AUTH_MODE_OPEN:	/* Note: Omit break here. */
 		case AUTH_MODE_WPA:
 		case AUTH_MODE_WPA_PSK:
 		case AUTH_MODE_WPA2:
@@ -546,6 +565,11 @@ VOID aisFsmStateInit_JOIN(IN P_ADAPTER_T prAdapter, P_BSS_DESC_T prBssDesc)
 		case AUTH_MODE_AUTO_SWITCH:
 			DBGLOG(AIS, LOUD, "JOIN INIT: eAuthMode == AUTH_MODE_AUTO_SWITCH\n");
 			prAisFsmInfo->ucAvailableAuthTypes = (UINT_8) (AUTH_TYPE_OPEN_SYSTEM | AUTH_TYPE_SHARED_KEY);
+			break;
+
+		case AUTH_MODE_WPA3_SAE:
+			DBGLOG(AIS, LOUD, "JOIN INIT: eAuthMode == AUTH_MODE_WPA3_SAE\n");
+			prAisFsmInfo->ucAvailableAuthTypes = (UINT_8) AUTH_TYPE_SAE;
 			break;
 
 		default:
@@ -578,6 +602,31 @@ VOID aisFsmStateInit_JOIN(IN P_ADAPTER_T prAdapter, P_BSS_DESC_T prBssDesc)
 		case AUTH_MODE_NON_RSN_FT:
 			prAisFsmInfo->ucAvailableAuthTypes = (UINT_8) AUTH_TYPE_FAST_BSS_TRANSITION;
 			break;
+		case AUTH_MODE_OPEN:
+			if (prConnSettings->rRsnInfo.au4AuthKeyMgtSuite[0] == WLAN_AKM_SUITE_SAE) {
+				DBGLOG(AIS, INFO, "JOIN INIT: eAuthMode == OPEN | SAE\n");
+				prAisFsmInfo->ucAvailableAuthTypes =
+				    (UINT_8) (AUTH_TYPE_OPEN_SYSTEM | AUTH_TYPE_SAE);
+			} else {
+				DBGLOG(AIS, INFO, "JOIN INIT: eAuthMode == OPEN\n");
+				prAisFsmInfo->ucAvailableAuthTypes = (UINT_8) AUTH_TYPE_OPEN_SYSTEM;
+			}
+			break;
+		case AUTH_MODE_WPA3_SAE:
+			/*
+			 * With a PMKID for the AP, Open System authentication will do;
+			 * not if the AP said before that it does not know the PMKID.
+			 */
+			prBlackList = aisQueryBlackList(prAdapter, prBssDesc);
+			if (!(prBlackList && prBlackList->u2AuthStatus == STATUS_CODE_INVALID_PMKID) &&
+			    rsnSearchPmkidEntry(prAdapter, prBssDesc->aucBSSID, &u4PmkidEntry)) {
+				prAisFsmInfo->ucAvailableAuthTypes =
+				    (UINT_8) (AUTH_TYPE_OPEN_SYSTEM | AUTH_TYPE_SAE);
+				DBGLOG(AIS, INFO, "SAE: change AUTH to OPEN when roaming with PMK\n");
+			} else {
+				prAisFsmInfo->ucAvailableAuthTypes = (UINT_8) AUTH_TYPE_SAE;
+			}
+			break;
 		default:
 			prAisFsmInfo->ucAvailableAuthTypes = prAisSpecificBssInfo->ucRoamingAuthTypes;
 			break;
@@ -607,6 +656,13 @@ VOID aisFsmStateInit_JOIN(IN P_ADAPTER_T prAdapter, P_BSS_DESC_T prBssDesc)
 		prAisFsmInfo->ucAvailableAuthTypes &= ~(UINT_8) AUTH_TYPE_FAST_BSS_TRANSITION;
 
 		prStaRec->ucAuthAlgNum = (UINT_8) AUTH_ALGORITHM_NUM_FAST_BSS_TRANSITION;
+	} else if (prAisFsmInfo->ucAvailableAuthTypes & (UINT_8) AUTH_TYPE_SAE) {
+
+		DBGLOG(AIS, LOUD, "JOIN INIT: Try to do Authentication with AuthType == SAE.\n");
+
+		prAisFsmInfo->ucAvailableAuthTypes &= ~(UINT_8) AUTH_TYPE_SAE;
+
+		prStaRec->ucAuthAlgNum = (UINT_8) AUTH_ALGORITHM_NUM_SAE;
 	} else {
 		ASSERT(0);
 	}
@@ -672,6 +728,29 @@ BOOLEAN aisFsmStateInit_RetryJOIN(IN P_ADAPTER_T prAdapter, P_STA_RECORD_T prSta
 		prAisFsmInfo->ucAvailableAuthTypes &= ~(UINT_8) AUTH_TYPE_SHARED_KEY;
 
 		prStaRec->ucAuthAlgNum = (UINT_8) AUTH_ALGORITHM_NUM_SHARED_KEY;
+	} else if ((prAisFsmInfo->ucAvailableAuthTypes & (UINT_8) AUTH_TYPE_SAE) &&
+		   prAdapter->rWifiVar.rConnSettings.rRsnInfo.au4AuthKeyMgtSuite[0] == WLAN_AKM_SUITE_SAE) {
+
+		/*
+		 * Open System authentication with a PMKID was tried. SAE is next if that
+		 * is what the AP did not take; any other failure is one of the JOIN.
+		 */
+		switch (prStaRec->u2StatusCode) {
+		case STATUS_CODE_AUTH_ALGORITHM_NOT_SUPPORTED:
+		case STATUS_CODE_INVALID_INFO_ELEMENT:
+		case STATUS_CODE_INVALID_PMKID:
+		case STATUS_CODE_AUTH_TIMEOUT:
+			break;
+		default:
+			prAisFsmInfo->ucAvailableAuthTypes = 0;
+			return FALSE;
+		}
+
+		DBGLOG(AIS, INFO, "RETRY JOIN INIT: Retry Authentication with AuthType == SAE.\n");
+
+		prAisFsmInfo->ucAvailableAuthTypes &= ~(UINT_8) AUTH_TYPE_SAE;
+
+		prStaRec->ucAuthAlgNum = (UINT_8) AUTH_ALGORITHM_NUM_SAE;
 	} else {
 		DBGLOG(AIS, ERROR, "RETRY JOIN INIT: Retry Authentication with Unexpected AuthType.\n");
 		ASSERT(0);
@@ -2985,6 +3064,17 @@ enum _ENUM_AIS_STATE_T aisFsmJoinCompleteAction(IN struct _ADAPTER_T *prAdapter,
 						MAC2STR(prBssDesc->aucBSSID),
 						prBssDesc->ucJoinFailureCount,
 						prBssDesc->rJoinFailTime);
+				}
+
+				/* so that aisFsmStateInit_JOIN() will not count on the PMKID with this AP again */
+				if (prStaRec->u2StatusCode == STATUS_CODE_INVALID_PMKID) {
+					struct AIS_BLACKLIST_ITEM *prBlackList;
+
+					prBlackList = aisAddBlacklist(prAdapter, prBssDesc, AIS_BLACK_LIST_FROM_DRIVER);
+					if (prBlackList) {
+						prBlackList->u2AuthStatus = prStaRec->u2StatusCode;
+						DBGLOG(AIS, INFO, "Add blocklist due to STATUS_INVALID_PMKID\n");
+					}
 				}
 
 				if (prBssDesc->prBlack)
