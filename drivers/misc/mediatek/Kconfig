@@ -38,6 +38,9 @@ config MTK_COMBO
 	tristate "MediaTek WMT core for the connectivity subsystem"
 	depends on MTK_BTIF && m
 	select FW_LOADER
+	select CRC32
+	select ZLIB_DEFLATE
+	select MFD_SYSCON
 	help
 	  The WMT ("wireless management task") core: it powers the
 	  connectivity subsystem up and down, loads its ROM patches and

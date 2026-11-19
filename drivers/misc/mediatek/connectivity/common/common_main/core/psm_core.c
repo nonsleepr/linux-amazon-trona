@@ -20,6 +20,7 @@
 #include "wmt_exp.h"
 #include <mtk_wcn_cmb_stub.h>
 #include <linux/timer.h>
+#include "mtk_conn_compat.h"
 
 INT32 gPsmDbgLevel = STP_PSM_LOG_INFO;
 MTKSTP_PSM_T stp_psm_i;

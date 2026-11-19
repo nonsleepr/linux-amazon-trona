@@ -285,7 +285,7 @@ static unsigned char __iomem *wmt_step_get_emi_base_address(void)
 {
 	if (g_step_env.emi_base_addr == NULL) {
 		if (gConEmiPhyBase)
-			g_step_env.emi_base_addr = ioremap_nocache(gConEmiPhyBase, gConEmiSize);
+			g_step_env.emi_base_addr = ioremap(gConEmiPhyBase, gConEmiSize);
 	}
 
 	return g_step_env.emi_base_addr;
@@ -373,7 +373,8 @@ static int wmt_step_get_cfg(const char *p_patch_name, osal_firmware **pp_patch)
 	osal_firmware *fw = NULL;
 
 	*pp_patch = NULL;
-	if (request_firmware((const struct firmware **)&fw, p_patch_name, NULL) != 0)
+	/* the file is for debugging: for it not to be there is the rule */
+	if (firmware_request_nowarn((const struct firmware **)&fw, p_patch_name, wmt_dev) != 0)
 		return -1;
 
 	WMT_DBG_FUNC("Load step cfg %s ok!!\n", p_patch_name);
@@ -448,7 +449,7 @@ static int wmt_step_parse_act_id(char *str)
 {
 	int str_to_int = STEP_ACTION_INDEX_NO_DEFINE;
 
-	if (str == NULL || str == '\0')
+	if (str == NULL || *str == '\0')
 		return STEP_ACTION_INDEX_NO_DEFINE;
 
 	str_to_int = wmt_step_get_int_from_four_char(str);
@@ -1623,7 +1624,7 @@ static int wmt_step_do_write_register_action(struct step_reigster_info *p_reg_in
 			return -1;
 		}
 
-		p_addr = ioremap_nocache(phy_addr, 0x4);
+		p_addr = ioremap(phy_addr, 0x4);
 		if (p_addr) {
 			CONSYS_REG_WRITE_MASK((unsigned int *)p_addr, p_reg_info->value, p_reg_info->mask);
 			WMT_INFO_FUNC(
@@ -1689,7 +1690,7 @@ static int wmt_step_do_read_register_action(struct step_reigster_info *p_reg_inf
 			return -1;
 		}
 
-		p_addr = ioremap_nocache(phy_addr, 0x4);
+		p_addr = ioremap(phy_addr, 0x4);
 		if (p_addr) {
 			sprintf(buf, "STEP show: reg read Phy addr(0x%08x): 0x%08x\n",
 				(unsigned int)phy_addr, CONSYS_REG_READ(p_addr));
@@ -2326,6 +2327,10 @@ void wmt_step_init(void)
 
 void wmt_step_deinit(void)
 {
+	/* wmt_lib_deinit() comes here for a WMT_init() that failed, too */
+	if (!g_step_env.is_setup)
+		return;
+
 	down_write(&g_step_env.init_rwsem);
 	g_step_env.is_enable = 0;
 	up_write(&g_step_env.init_rwsem);

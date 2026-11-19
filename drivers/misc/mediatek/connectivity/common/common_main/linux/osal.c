@@ -30,8 +30,11 @@
 *                    E X T E R N A L   R E F E R E N C E S
 ********************************************************************************
 */
+#include <linux/sched/clock.h>
+#include <linux/string.h>
 #include "osal.h"
 #include "connectivity_build_in_adapter.h"
+#include "mtk_conn_compat.h"
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -119,12 +122,17 @@ INT32 osal_strncmp(const PINT8 dst, const PINT8 src, UINT32 len)
 
 PINT8 osal_strcpy(PINT8 dst, const PINT8 src)
 {
-	return strncpy(dst, src, strlen(src)+1);
+	return memcpy(dst, src, strlen(src)+1);
 }
 
 PINT8 osal_strncpy(PINT8 dst, const PINT8 src, UINT32 len)
 {
-	return strncpy(dst, src, len);
+	/* as strncpy(): zero padded, and not terminated if src fills dst */
+	UINT32 n = strnlen(src, len);
+
+	memcpy(dst, src, n);
+	memset(dst + n, 0, len - n);
+	return dst;
 }
 
 PINT8 osal_strcat(PINT8 dst, const PINT8 src)
@@ -341,9 +349,11 @@ INT32 osal_thread_create(P_OSAL_THREAD pThread)
 	if (!pThread)
 		return -1;
 
-	pThread->pThread = kthread_create(pThread->pThreadFunc, pThread->pThreadData, pThread->threadName);
-	if (pThread->pThread == NULL)
+	pThread->pThread = kthread_create(pThread->pThreadFunc, pThread->pThreadData, "%s", pThread->threadName);
+	if (IS_ERR(pThread->pThread)) {
+		pThread->pThread = NULL;
 		return -1;
+	}
 
 	return 0;
 }
@@ -364,7 +374,8 @@ INT32 osal_thread_stop(P_OSAL_THREAD pThread)
 
 	if ((pThread) && (pThread->pThread)) {
 		iRet = kthread_stop(pThread->pThread);
-		/* pThread->pThread = NULL; */
+		/* the thread is gone: osal_thread_destroy() is not to stop it again */
+		pThread->pThread = NULL;
 		return iRet;
 	}
 	return -1;
@@ -412,7 +423,6 @@ INT32 osal_thread_destroy(P_OSAL_THREAD pThread)
 static INT32 osal_thread_sched_retrieve(P_OSAL_THREAD pThread, P_OSAL_THREAD_SCHEDSTATS sched)
 {
 #ifdef CONFIG_SCHEDSTATS
-	struct sched_entity se;
 	UINT64 sec;
 	ULONG usec;
 
@@ -425,13 +435,12 @@ static INT32 osal_thread_sched_retrieve(P_OSAL_THREAD pThread, P_OSAL_THREAD_SCH
 	if (!pThread || !pThread->pThread)
 		return -2;
 
-	memcpy(&se, &pThread->pThread->se, sizeof(struct sched_entity));
 	osal_get_local_time(&sec, &usec);
 
 	sched->time = sec*1000 + usec/1000;
-	sched->exec = se.sum_exec_runtime;
-	sched->runnable = se.statistics.wait_sum;
-	sched->iowait = se.statistics.iowait_sum;
+	sched->exec = READ_ONCE(pThread->pThread->se.sum_exec_runtime);
+	sched->runnable = READ_ONCE(pThread->pThread->stats.wait_sum);
+	sched->iowait = READ_ONCE(pThread->pThread->stats.iowait_sum);
 
 	return 0;
 #else
@@ -774,13 +783,19 @@ INT32 osal_test_and_set_bit(UINT32 bitOffset, P_OSAL_BIT_OP_VAR pData)
   *
 */
 
+/* timer_list callbacks get the timer; the handlers here their own data */
+static VOID osal_timer_timeout(struct timer_list *timer)
+{
+	P_OSAL_TIMER pTimer = timer_container_of(pTimer, timer, timer);
+
+	pTimer->timeoutHandler(pTimer->timeroutHandlerData);
+}
+
 INT32 osal_timer_create(P_OSAL_TIMER pTimer)
 {
 	struct timer_list *timer = &pTimer->timer;
 
-	init_timer(timer);
-	timer->function = pTimer->timeoutHandler;
-	timer->data = (ULONG)pTimer->timeroutHandlerData;
+	timer_setup(timer, osal_timer_timeout, 0);
 	return 0;
 }
 
@@ -798,7 +813,7 @@ INT32 osal_timer_stop(P_OSAL_TIMER pTimer)
 {
 	struct timer_list *timer = &pTimer->timer;
 
-	del_timer(timer);
+	timer_delete(timer);
 	return 0;
 }
 
@@ -806,7 +821,7 @@ INT32 osal_timer_stop_sync(P_OSAL_TIMER pTimer)
 {
 	struct timer_list *timer = &pTimer->timer;
 
-	del_timer_sync(timer);
+	timer_delete_sync(timer);
 	return 0;
 }
 
@@ -1180,7 +1195,7 @@ INT32 osal_wake_lock_init(P_OSAL_WAKE_LOCK pLock)
 		return -1;
 
 	if (pLock->init_flag == 0) {
-		pLock->wake_lock = wakeup_source_register(pLock->name);
+		pLock->wake_lock = wakeup_source_register(NULL, pLock->name);
 		pLock->init_flag = 1;
 	}
 
@@ -1236,7 +1251,7 @@ INT32 osal_wake_lock_count(P_OSAL_WAKE_LOCK pLock)
 		return -1;
 
 	if (pLock->init_flag == 1)
-		count = pLock->wake_lock->active;
+		count = pLock->wake_lock ? pLock->wake_lock->active : 0;
 	else
 		pr_info("%s: wake_lock is not initialized!\n", __func__);
 
@@ -1474,7 +1489,11 @@ INT32 osal_ftrace_print(const PINT8 str, ...)
 		vsnprintf(tempString, DBG_LOG_STR_SIZE, str, args);
 		va_end(args);
 
-		trace_printk("%s\n", tempString);
+		/*
+		 * Not trace_printk(): one in a module has the kernel warn of
+		 * being a debug kernel when the module is loaded.
+		 */
+		pr_info("%s\n", tempString);
 	}
 #endif
 	return 0;

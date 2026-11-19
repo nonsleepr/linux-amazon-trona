@@ -34,6 +34,9 @@
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
 
+struct gpio_desc;
+struct regmap;
+
 #define ENABLE MTK_WCN_BOOL_TRUE
 #define DISABLE MTK_WCN_BOOL_FALSE
 
@@ -112,6 +115,8 @@ struct CONSYS_BASE_ADDRESS {
 	SIZE_T da_xobuf_base;
 	SIZE_T mcu_top_misc_on_base;
 	SIZE_T mcu_conn_hif_pdma_base;
+	/* for the bases above that are another driver's registers */
+	struct regmap *infracfg_regmap;
 };
 
 enum CONSYS_BASE_ADDRESS_INDEX {
@@ -184,8 +189,8 @@ typedef VOID(*IC_FORCE_TRIGGER_ASSERT_DEBUG_PIN) (VOID);
 typedef INT32(*CONSYS_IC_CO_CLOCK_TYPE) (VOID);
 typedef P_CONSYS_EMI_ADDR_INFO(*CONSYS_IC_SOC_GET_EMI_PHY_ADD) (VOID);
 typedef MTK_WCN_BOOL(*CONSYS_IC_NEED_STORE_PDEV) (VOID);
-typedef UINT32(*CONSYS_IC_STORE_PDEV) (struct platform_device *pdev);
-typedef UINT32(*CONSYS_IC_STORE_RESET_CONTROL) (struct platform_device *pdev);
+typedef INT32(*CONSYS_IC_STORE_PDEV) (struct platform_device *pdev);
+typedef INT32(*CONSYS_IC_STORE_RESET_CONTROL) (struct platform_device *pdev);
 typedef MTK_WCN_BOOL(*CONSYS_IC_NEED_GPS) (VOID);
 typedef VOID(*CONSYS_IC_SET_IF_PINMUX) (MTK_WCN_BOOL enable);
 typedef VOID(*CONSYS_IC_SET_DL_ROM_PATCH_FLAG) (INT32 flag);
@@ -302,6 +307,7 @@ UINT32 mtk_wcn_consys_soc_chipid(VOID);
 #if !defined(CONFIG_MTK_GPIO_LEGACY)
 struct pinctrl *mtk_wcn_consys_get_pinctrl(VOID);
 #endif
+struct gpio_desc *mtk_wcn_consys_get_ant_sel_gpio(VOID);
 INT32 mtk_wcn_consys_co_clock_type(VOID);
 INT32 mtk_wcn_consys_set_dbg_mode(UINT32 flag);
 INT32 mtk_wcn_consys_set_dynamic_dump(PUINT32 buf);

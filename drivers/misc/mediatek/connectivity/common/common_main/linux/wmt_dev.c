@@ -46,8 +46,6 @@
 #endif
 #ifdef CONFIG_EARLYSUSPEND
 #include <linux/earlysuspend.h>
-#else
-#include <linux/fb.h>
 #endif
 #include <linux/proc_fs.h>
 #include <mtk_wcn_cmb_stub.h>
@@ -69,6 +67,7 @@
 #include "wmt_step.h"
 
 #include "connsys_debug_utility.h"
+#include "mtk_conn_compat.h"
 
 #ifdef CONFIG_COMPAT
 #define COMPAT_WMT_IOCTL_SET_PATCH_NAME		_IOW(WMT_IOC_MAGIC, 4, compat_uptr_t)
@@ -202,43 +201,11 @@ struct early_suspend wmt_early_suspend_handler = {
 
 #else
 
-static struct notifier_block wmt_fb_notifier;
-static INT32 wmt_fb_notifier_callback(struct notifier_block *self, ULONG event, PVOID data)
-{
-	struct fb_event *evdata = data;
-	INT32 blank;
-
-	WMT_DBG_FUNC("wmt_fb_notifier_callback\n");
-
-	/* If we aren't interested in this event, skip it immediately ... */
-	if (event != FB_EVENT_BLANK)
-		return 0;
-
-	blank = *(INT32 *)evdata->data;
-	WMT_DBG_FUNC("fb_notify(blank=%d)\n", blank);
-
-	switch (blank) {
-	case FB_BLANK_UNBLANK:
-		atomic_set(&g_es_lr_flag_for_quick_sleep, 0);
-		atomic_set(&g_es_lr_flag_for_lpbk_onoff, 1);
-		atomic_set(&g_es_lr_flag_for_blank, 1);
-		WMT_WARN_FUNC("@@@@@@@@@@wmt enter UNBLANK @@@@@@@@@@@@@@\n");
-		if (hif_info == 0)
-			break;
-		schedule_work(&gPwrOnOffWork);
-		break;
-	case FB_BLANK_POWERDOWN:
-		atomic_set(&g_es_lr_flag_for_quick_sleep, 1);
-		atomic_set(&g_es_lr_flag_for_lpbk_onoff, 0);
-		atomic_set(&g_es_lr_flag_for_blank, 0);
-		WMT_WARN_FUNC("@@@@@@@@@@wmt enter early POWERDOWN @@@@@@@@@@@@@@\n");
-		schedule_work(&gPwrOnOffWork);
-		break;
-	default:
-		break;
-	}
-	return 0;
-}
+/*
+ * MediaTek's kernels without early suspend had a framebuffer notifier here to
+ * follow the screen, for the same as above. There is no such notification in
+ * this kernel: WMT_init() sets the flags once.
+ */
 #endif /* CONFIG_EARLYSUSPEND */
 /*******************************************************************************
 *                          F U N C T I O N S
@@ -406,10 +373,10 @@ static ssize_t wmt_dev_proc_for_aee_write(struct file *filp, const char __user *
 
 INT32 wmt_dev_proc_for_aee_setup(VOID)
 {
-	static const struct file_operations wmt_aee_fops = {
-		.owner = THIS_MODULE,
-		.read = wmt_dev_proc_for_aee_read,
-		.write = wmt_dev_proc_for_aee_write,
+	static const struct proc_ops wmt_aee_fops = {
+		.proc_read = wmt_dev_proc_for_aee_read,
+		.proc_write = wmt_dev_proc_for_aee_write,
+		.proc_lseek = default_llseek,
 	};
 
 	gWmtAeeEntry = proc_create(WMT_AEE_PROCNAME, 0664, NULL, &wmt_aee_fops);
@@ -478,7 +445,7 @@ INT32 wmt_dev_patch_get(PUINT8 pPatchName, osal_firmware **ppPatch)
 	}
 	*ppPatch = NULL;
 	do {
-		iRet = request_firmware((const struct firmware **)&fw, pPatchName, NULL);
+		iRet = request_firmware((const struct firmware **)&fw, pPatchName, wmt_dev);
 		if (iRet == -EAGAIN) {
 			WMT_ERR_FUNC("failed to open or read!(%s), retry again!\n", pPatchName);
 			osal_sleep_ms(100);
@@ -526,7 +493,7 @@ MTK_WCN_BOOL wmt_dev_is_file_exist(PUINT8 pFileName)
 		return MTK_WCN_BOOL_FALSE;
 	}
 
-	iRet = request_firmware((const struct firmware **)&fw, pFileName, NULL);
+	iRet = request_firmware((const struct firmware **)&fw, pFileName, wmt_dev);
 	if (iRet != 0) {
 		WMT_ERR_FUNC("failed to open or read!(%s)\n", pFileName);
 		return MTK_WCN_BOOL_FALSE;
@@ -865,6 +832,55 @@ UINT32 WMT_poll(struct file *filp, poll_table *wait)
 	return mask;
 }
 
+/* stp/hif/fm mode: what the launcher sets with WMT_IOCTL_SET_STP_MODE */
+static INT32 wmt_dev_set_stp_mode(ULONG arg)
+{
+	INT32 iRet = 0;
+
+	/* set hif conf */
+	do {
+		P_OSAL_OP pOp;
+		MTK_WCN_BOOL bRet;
+		P_OSAL_SIGNAL pSignal = NULL;
+		P_WMT_HIF_CONF pHif = NULL;
+
+		if (hif_info == 1) {
+			WMT_INFO_FUNC("hif_info had been set!\n");
+			break;
+		}
+
+		iRet = wmt_lib_set_hif(arg);
+		if (iRet != 0) {
+			WMT_INFO_FUNC("wmt_lib_set_hif fail (%lu)\n", arg);
+			break;
+		}
+
+		pOp = wmt_lib_get_free_op();
+		if (!pOp) {
+			WMT_INFO_FUNC("get_free_lxop fail\n");
+			break;
+		}
+		pSignal = &pOp->signal;
+		pOp->op.opId = WMT_OPID_HIF_CONF;
+
+		pHif = wmt_lib_get_hif();
+
+		osal_memcpy(&pOp->op.au4OpData[0], pHif, sizeof(WMT_HIF_CONF));
+		pOp->op.u4InfoBit = WMT_OP_HIF_BIT;
+		pSignal->timeoutValue = 0;
+
+		bRet = wmt_lib_put_act_op(pOp);
+		WMT_DBG_FUNC("WMT_OPID_HIF_CONF result(%d)\n", bRet);
+		iRet = (bRet == MTK_WCN_BOOL_FALSE) ? -EFAULT : 0;
+		if (iRet == 0) {
+			WMT_INFO_FUNC("luncher set STP mode success!\n");
+			hif_info = 1;
+		}
+	} while (0);
+
+	return iRet;
+}
+
 /* INT32 WMT_ioctl(struct inode *inode, struct file *filp, UINT32 cmd, unsigned long arg) */
 LONG WMT_unlocked_ioctl(struct file *filp, UINT32 cmd, ULONG arg)
 {
@@ -891,46 +907,7 @@ LONG WMT_unlocked_ioctl(struct file *filp, UINT32 cmd, ULONG arg)
 		}
 		break;
 	case WMT_IOCTL_SET_STP_MODE:	/* stp/hif/fm mode */
-		/* set hif conf */
-		do {
-			P_OSAL_OP pOp;
-			MTK_WCN_BOOL bRet;
-			P_OSAL_SIGNAL pSignal = NULL;
-			P_WMT_HIF_CONF pHif = NULL;
-
-			if (hif_info == 1) {
-				WMT_INFO_FUNC("hif_info had been set!\n");
-				break;
-			}
-
-			iRet = wmt_lib_set_hif(arg);
-			if (iRet != 0) {
-				WMT_INFO_FUNC("wmt_lib_set_hif fail (%lu)\n", arg);
-				break;
-			}
-
-			pOp = wmt_lib_get_free_op();
-			if (!pOp) {
-				WMT_INFO_FUNC("get_free_lxop fail\n");
-				break;
-			}
-			pSignal = &pOp->signal;
-			pOp->op.opId = WMT_OPID_HIF_CONF;
-
-			pHif = wmt_lib_get_hif();
-
-			osal_memcpy(&pOp->op.au4OpData[0], pHif, sizeof(WMT_HIF_CONF));
-			pOp->op.u4InfoBit = WMT_OP_HIF_BIT;
-			pSignal->timeoutValue = 0;
-
-			bRet = wmt_lib_put_act_op(pOp);
-			WMT_DBG_FUNC("WMT_OPID_HIF_CONF result(%d)\n", bRet);
-			iRet = (bRet == MTK_WCN_BOOL_FALSE) ? -EFAULT : 0;
-			if (iRet == 0) {
-				WMT_INFO_FUNC("luncher set STP mode success!\n");
-				hif_info = 1;
-			}
-		} while (0);
+		iRet = wmt_dev_set_stp_mode(arg);
 		break;
 	case WMT_IOCTL_FUNC_ONOFF_CTRL:	/* test turn on/off func */
 #if WMT_DBG_SUPPORT
@@ -1472,7 +1449,12 @@ static INT32 WMT_close(struct inode *inode, struct file *file)
 
 	if (atomic_dec_return(&gWmtRefCnt) == 0) {
 		WMT_INFO_FUNC("last call\n");
-		gWmtClose = 1;
+		/*
+		 * With MediaTek's launcher this was it going away: the system
+		 * shutting down, and so no rx timeout and no assert any more
+		 * (gWmtClose = 1). Without one it is a debugging tool, and
+		 * says nothing about the system.
+		 */
 	}
 
 	return 0;
@@ -1545,7 +1527,7 @@ static INT32 WMT_init(VOID)
 	ret = register_chrdev_region(devID, WMT_DEV_NUM, WMT_DRIVER_NAME);
 	if (ret) {
 		WMT_ERR_FUNC("fail to register chrdev\n");
-		return ret;
+		goto error_region;
 	}
 
 	cdev_init(&gWmtCdev, &gWmtFops);
@@ -1559,7 +1541,7 @@ static INT32 WMT_init(VOID)
 	WMT_INFO_FUNC("driver(major %d) installed\n", gWmtMajor);
 
 #if WMT_CREATE_NODE_DYNAMIC
-	wmt_class = class_create(THIS_MODULE, "stpwmt");
+	wmt_class = class_create("stpwmt");
 	if (IS_ERR(wmt_class))
 		goto error;
 	wmt_dev = device_create(wmt_class, NULL, devID, NULL, "stpwmt");
@@ -1619,17 +1601,26 @@ static INT32 WMT_init(VOID)
 	gWmtInitDone = 1;
 	wake_up(&gWmtInitWq);
 
+	/*
+	 * There is no launcher to set the STP mode. For a CONSYS in the SoC
+	 * it set full STP on BTIF, with FM on the common interface.
+	 */
+	if (chip_type == WMT_CHIP_TYPE_SOC &&
+	    wmt_dev_set_stp_mode(STP_BTIF_FULL | (WMT_FM_COMM << 4)))
+		WMT_ERR_FUNC("set BTIF STP mode fail\n");
+
 	INIT_WORK(&gPwrOnOffWork, wmt_pwr_on_off_handler);
 #ifdef CONFIG_EARLYSUSPEND
 	register_early_suspend(&wmt_early_suspend_handler);
 	WMT_INFO_FUNC("register_early_suspend finished\n");
 #else
-	wmt_fb_notifier.notifier_call = wmt_fb_notifier_callback;
-	ret = fb_register_client(&wmt_fb_notifier);
-	if (ret)
-		WMT_ERR_FUNC("wmt register fb_notifier failed! ret(%d)\n", ret);
-	else
-		WMT_DBG_FUNC("wmt register fb_notifier OK!\n");
+	/*
+	 * Nothing tells of the screen here. Be as with it on, except for
+	 * keeping the chip powered just for that: no quick sleep, not blank.
+	 */
+	atomic_set(&g_es_lr_flag_for_quick_sleep, 0);
+	atomic_set(&g_es_lr_flag_for_lpbk_onoff, 0);
+	atomic_set(&g_es_lr_flag_for_blank, 1);
 #endif /* CONFIG_EARLYSUSPEND */
 	WMT_DBG_FUNC("success\n");
 
@@ -1643,26 +1634,30 @@ static INT32 WMT_init(VOID)
 	return 0;
 
 error:
-	wmt_lib_deinit();
-#if CFG_WMT_DBG_SUPPORT
-	wmt_dev_dbg_remove();
-#endif
+	/*
+	 * wmt_lib_init() has done nothing yet when it fails for lack of the
+	 * config file, and wmt_lib_deinit() is not for that. Nothing that
+	 * comes after wmt_lib_init() gets here.
+	 */
+	if (wmt_conf_get_cfg() != NULL)
+		wmt_lib_deinit();
 #if WMT_CREATE_NODE_DYNAMIC
-	if (!(IS_ERR(wmt_dev)))
+	if (!IS_ERR_OR_NULL(wmt_dev))
 		device_destroy(wmt_class, devID);
-	if (!(IS_ERR(wmt_class))) {
+	wmt_dev = NULL;
+	if (!IS_ERR_OR_NULL(wmt_class))
 		class_destroy(wmt_class);
-		wmt_class = NULL;
-	}
+	wmt_class = NULL;
 #endif
 
 	if (cdevErr == 0)
 		cdev_del(&gWmtCdev);
 
-	if (ret == 0) {
-		unregister_chrdev_region(devID, WMT_DEV_NUM);
-		gWmtMajor = -1;
-	}
+	unregister_chrdev_region(devID, WMT_DEV_NUM);
+
+error_region:
+	stp_drv_exit();
+	mtk_wcn_hif_sdio_driver_exit();
 
 	WMT_ERR_FUNC("fail\n");
 
@@ -1678,8 +1673,6 @@ static VOID WMT_exit(VOID)
 #ifdef CONFIG_EARLYSUSPEND
 	unregister_early_suspend(&wmt_early_suspend_handler);
 	WMT_INFO_FUNC("unregister_early_suspend finished\n");
-#else
-	fb_unregister_client(&wmt_fb_notifier);
 #endif /* CONFIG_EARLYSUSPEND */
 
 	wmt_dev_patch_info_free();

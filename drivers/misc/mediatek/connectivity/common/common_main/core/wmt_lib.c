@@ -144,6 +144,27 @@ INT32 __weak mtk_wcn_consys_stp_btif_dpidle_ctrl(enum _ENUM_BTIF_DPIDLE_ en_flag
 	return 0;
 }
 
+/*
+ * Three functions are given out to be called through pointers that are not of
+ * their types: a crash where the kernel checks that (kCFI). Each goes through
+ * a function of the pointer's type instead.
+ */
+static VOID wmt_lib_func_ctrl_for_plat(UINT32 on, UINT32 type)
+{
+	mtk_wcn_wmt_func_ctrl_for_plat(on, (ENUM_WMTDRV_TYPE_T) type);
+}
+
+static INT32 wmt_lib_stp_btif_dpidle_ctrl(UINT32 en_flag)
+{
+	return mtk_wcn_consys_stp_btif_dpidle_ctrl((enum _ENUM_BTIF_DPIDLE_) en_flag);
+}
+
+/* called as a STP_PSM_CB, see opfunc_pwr_sv() */
+static INT32 wmt_lib_stp_psm_notify_stp(INT32 action)
+{
+	return mtk_wcn_stp_psm_notify_stp((MTKSTP_PSM_ACTION_T) action);
+}
+
 INT32 wmt_lib_wlan_lock_aquire(VOID)
 {
 	return osal_lock_sleepable_lock(&gDevWmt.wlan_lock);
@@ -396,9 +417,9 @@ INT32 wmt_lib_init(VOID)
 	/*5. register audio if control callback to WMT-PLAT */
 	wmt_plat_aif_cb_reg(wmt_lib_set_aif);
 	/*6. register function control callback to WMT-PLAT */
-	wmt_plat_func_ctrl_cb_reg(mtk_wcn_wmt_func_ctrl_for_plat);
+	wmt_plat_func_ctrl_cb_reg(wmt_lib_func_ctrl_for_plat);
 
-	wmt_plat_deep_idle_ctrl_cb_reg(mtk_wcn_consys_stp_btif_dpidle_ctrl);
+	wmt_plat_deep_idle_ctrl_cb_reg(wmt_lib_stp_btif_dpidle_ctrl);
 	/*7 reset gps/bt state */
 
 	mtk_wcn_wmt_system_state_reset();
@@ -435,6 +456,19 @@ INT32 wmt_lib_deinit(VOID)
 		WMT_ERR_FUNC("osal_thread_stop(0x%p) fail(%d)\n", pThraed, iRet);
 		iResult += 1;
 	}
+
+	/*
+	 * What else wmt_lib_init() starts. MediaTek's kernels don't unload this
+	 * driver; as a module that can go away, it can't leave a thread, timers
+	 * and works behind.
+	 */
+	osal_thread_stop(&pDevWmt->worker_thread);
+	osal_timer_stop_sync(&pDevWmt->worker_timer);
+	osal_timer_stop_sync(&pDevWmt->utc_sync_timer);
+	if (pDevWmt->wmtd_worker_thread_work.func)
+		cancel_work_sync(&pDevWmt->wmtd_worker_thread_work);
+	if (pDevWmt->utcSyncWorker.func)
+		cancel_work_sync(&pDevWmt->utcSyncWorker);
 
 	/* 2. deinit: */
 
@@ -685,7 +719,7 @@ static MTK_WCN_BOOL wmt_lib_ps_action(MTKSTP_PSM_ACTION_T action)
 	pSignal->timeoutValue = 0;
 	lxop->op.opId = WMT_OPID_PWR_SV;
 	lxop->op.au4OpData[0] = action;
-	lxop->op.au4OpData[1] = (SIZE_T) mtk_wcn_stp_psm_notify_stp;
+	lxop->op.au4OpData[1] = (SIZE_T) wmt_lib_stp_psm_notify_stp;
 	u4Wait = 0;
 	bRet = wmt_lib_put_act_op(lxop);
 	return bRet;
@@ -1175,7 +1209,7 @@ static INT32 met_thread(void *pvData)
 	}
 	osal_memset(met_dump_buf, 0, MET_DUMP_SIZE);
 
-	emi_met_base = ioremap_nocache(emi_info->emi_ap_phy_addr + emi_met_offset, emi_met_size);
+	emi_met_base = ioremap(emi_info->emi_ap_phy_addr + emi_met_offset, emi_met_size);
 	if (!emi_met_base) {
 		osal_free(met_dump_buf);
 		WMT_ERR_FUNC("met emi ioremap fail\n");
@@ -1291,6 +1325,11 @@ static INT32 wmtd_worker_thread(void *pvData)
 
 	for (;;) {
 		osal_thread_wait_for_event(&pWmtDev->worker_thread, pEvent, wmt_lib_worker_wait_event_checker);
+
+		if (osal_thread_should_stop(&pWmtDev->worker_thread)) {
+			WMT_INFO_FUNC("wmtd worker thread should stop now...\n");
+			break;
+		}
 
 		/* get Op from activeWorkerQ */
 		pOp = wmt_lib_get_op(&pWmtDev->rWorkerOpQ);

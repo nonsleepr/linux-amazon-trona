@@ -88,12 +88,45 @@ typedef struct _PWR_SEQ_TIME_ {
 ********************************************************************************
 */
 
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 extern INT32 mtk_wcn_cmb_hw_pwr_off(VOID);
 extern INT32 mtk_wcn_cmb_hw_pwr_on(VOID);
 extern INT32 mtk_wcn_cmb_hw_rst(VOID);
 extern INT32 mtk_wcn_cmb_hw_init(P_PWR_SEQ_TIME pPwrSeqTime);
 extern INT32 mtk_wcn_cmb_hw_deinit(VOID);
 extern INT32 mtk_wcn_cmb_hw_state_show(VOID);
+#else
+/* Without external combo chip support there is no combo chip to power */
+static inline INT32 mtk_wcn_cmb_hw_pwr_off(VOID)
+{
+	return -1;
+}
+
+static inline INT32 mtk_wcn_cmb_hw_pwr_on(VOID)
+{
+	return -1;
+}
+
+static inline INT32 mtk_wcn_cmb_hw_rst(VOID)
+{
+	return -1;
+}
+
+static inline INT32 mtk_wcn_cmb_hw_init(P_PWR_SEQ_TIME pPwrSeqTime)
+{
+	return -1;
+}
+
+static inline INT32 mtk_wcn_cmb_hw_deinit(VOID)
+{
+	return -1;
+}
+
+static inline INT32 mtk_wcn_cmb_hw_state_show(VOID)
+{
+	return -1;
+}
+#endif
 
 
 #endif				/* _MTK_WCN_CMB_HW_H_ */

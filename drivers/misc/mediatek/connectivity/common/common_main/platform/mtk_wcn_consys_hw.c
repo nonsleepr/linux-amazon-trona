@@ -39,8 +39,10 @@
 #include "osal_typedef.h"
 #include "mtk_wcn_consys_hw.h"
 #include "wmt_step.h"
+#include <linux/gpio/consumer.h>
 #include <linux/of_reserved_mem.h>
 #include <linux/pinctrl/consumer.h>
+#include <linux/regmap.h>
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -57,7 +59,7 @@
 ********************************************************************************
 */
 static INT32 mtk_wmt_probe(struct platform_device *pdev);
-static INT32 mtk_wmt_remove(struct platform_device *pdev);
+static VOID mtk_wmt_remove(struct platform_device *pdev);
 static INT32 mtk_wmt_suspend(struct platform_device *pdev, pm_message_t state);
 static INT32 mtk_wmt_resume(struct platform_device *pdev);
 
@@ -95,6 +97,7 @@ const struct of_device_id apwmt_of_ids[] = {
 	{.compatible = "mediatek,mt6761-consys",},
 	{}
 };
+MODULE_DEVICE_TABLE(of, apwmt_of_ids);
 struct CONSYS_BASE_ADDRESS conn_reg;
 #endif
 
@@ -109,11 +112,19 @@ static struct platform_driver mtk_wmt_dev_drv = {
 #ifdef CONFIG_OF
 		   .of_match_table = apwmt_of_ids,
 #endif
+		   /* The WMT core can't have the device go away under it */
+		   .suppress_bind_attrs = true,
 		   },
 };
 
 /* GPIO part */
 struct pinctrl *consys_pinctrl;
+/* the WIFI antenna switch; asserted for the auxiliary antenna */
+static struct gpio_desc *consys_ant_sel_gpio;
+
+/* what mtk_wcn_consys_hw_reg_ctrl() and mtk_wcn_consys_hw_pwr_on() last did */
+static MTK_WCN_BOOL consys_hw_reg_on;
+static MTK_WCN_BOOL consys_hw_pwr_on;
 
 /*******************************************************************************
 *                           P R I V A T E   D A T A
@@ -152,22 +163,72 @@ P_WMT_CONSYS_IC_OPS __weak mtk_wcn_get_consys_ic_ops(VOID)
 	return NULL;
 }
 
-static INT32 mtk_wmt_probe(struct platform_device *pdev)
+/*
+ * The memory the CONSYS shares with the AP ("EMI"). MediaTek's kernel found it
+ * with a RESERVEDMEM_OF_DECLARE() of its own; here it is the memory-region of
+ * the device.
+ */
+static INT32 mtk_wmt_get_emi(struct platform_device *pdev)
 {
-	INT32 iRet = -1;
-	UINT32 pinmux;
-	struct device_node *pinctl_node, *pins_node;
+	struct device_node *node;
+	struct reserved_mem *rmem;
 	UINT8 __iomem *pConnsysEmiStart;
 
-	if (pdev)
-		g_pdev = pdev;
+	node = of_parse_phandle(pdev->dev.of_node, "memory-region", 0);
+	rmem = node ? of_reserved_mem_lookup(node) : NULL;
+	of_node_put(node);
+	if (!rmem) {
+		WMT_PLAT_PR_ERR("consys emi memory address gConEmiPhyBase invalid\n");
+		return -EINVAL;
+	}
+	gConEmiPhyBase = rmem->base;
+	gConEmiSize = rmem->size;
 
-	if (wmt_consys_ic_ops->consys_ic_need_store_pdev) {
-		if (wmt_consys_ic_ops->consys_ic_need_store_pdev() == MTK_WCN_BOOL_TRUE) {
-			if (wmt_consys_ic_ops->consys_ic_store_pdev)
-				wmt_consys_ic_ops->consys_ic_store_pdev(pdev);
-			pm_runtime_enable(&pdev->dev);
-		}
+	pConnsysEmiStart = ioremap(gConEmiPhyBase, gConEmiSize);
+	if (!pConnsysEmiStart) {
+		WMT_PLAT_PR_ERR("Connsys EMI ioremap fail\n");
+		return -ENOMEM;
+	}
+	WMT_PLAT_PR_INFO("Clearing Connsys EMI (virtual(0x%p) physical(0x%pa)) %llu bytes\n",
+			   pConnsysEmiStart, &gConEmiPhyBase, gConEmiSize);
+	memset_io(pConnsysEmiStart, 0, gConEmiSize);
+	iounmap(pConnsysEmiStart);
+	pConnsysEmiStart = NULL;
+
+	return 0;
+}
+
+/* What was got for the device goes away with it */
+static VOID mtk_wmt_forget_hw(VOID)
+{
+	memset(&conn_reg, 0, sizeof(conn_reg));
+	consys_pinctrl = NULL;
+	consys_ant_sel_gpio = NULL;
+}
+
+static INT32 mtk_wmt_probe_hw(struct platform_device *pdev)
+{
+	INT32 iRet = -1;
+
+	consys_pinctrl = devm_pinctrl_get(&pdev->dev);
+	if (IS_ERR(consys_pinctrl)) {
+		WMT_PLAT_PR_ERR("cannot find consys pinctrl.\n");
+		return PTR_ERR(consys_pinctrl);
+	}
+
+	/* Deasserted: the main antenna, MediaTek's default */
+	consys_ant_sel_gpio = devm_gpiod_get_optional(&pdev->dev, "ant-sel", GPIOD_OUT_LOW);
+	if (IS_ERR(consys_ant_sel_gpio)) {
+		WMT_PLAT_PR_ERR("cannot get wifi ant sel gpio.\n");
+		return PTR_ERR(consys_ant_sel_gpio);
+	}
+
+	if (wmt_consys_ic_ops->consys_ic_need_store_pdev &&
+	    wmt_consys_ic_ops->consys_ic_need_store_pdev() == MTK_WCN_BOOL_TRUE &&
+	    wmt_consys_ic_ops->consys_ic_store_pdev) {
+		iRet = wmt_consys_ic_ops->consys_ic_store_pdev(pdev);
+		if (iRet)
+			return iRet;
 	}
 
 	if (wmt_consys_ic_ops->consys_ic_read_reg_from_dts)
@@ -186,80 +247,95 @@ static INT32 mtk_wmt_probe(struct platform_device *pdev)
 	if (iRet)
 		return iRet;
 
-	if (gConEmiPhyBase) {
-		pConnsysEmiStart = ioremap_nocache(gConEmiPhyBase, gConEmiSize);
-		WMT_PLAT_PR_INFO("Clearing Connsys EMI (virtual(0x%p) physical(0x%pa)) %llu bytes\n",
-				   pConnsysEmiStart, &gConEmiPhyBase, gConEmiSize);
-		memset_io(pConnsysEmiStart, 0, gConEmiSize);
-		iounmap(pConnsysEmiStart);
-		pConnsysEmiStart = NULL;
+	if (wmt_consys_ic_ops->ic_bt_wifi_share_v33_spin_lock_init)
+		wmt_consys_ic_ops->ic_bt_wifi_share_v33_spin_lock_init();
 
-		if (wmt_consys_ic_ops->consys_ic_emi_mpu_set_region_protection)
-			wmt_consys_ic_ops->consys_ic_emi_mpu_set_region_protection();
-		if (wmt_consys_ic_ops->consys_ic_emi_set_remapping_reg)
-			wmt_consys_ic_ops->consys_ic_emi_set_remapping_reg();
-		if (wmt_consys_ic_ops->consys_ic_emi_coredump_remapping)
-			wmt_consys_ic_ops->consys_ic_emi_coredump_remapping(&pEmibaseaddr, 1);
-		if (wmt_consys_ic_ops->consys_ic_dedicated_log_path_init)
-			wmt_consys_ic_ops->consys_ic_dedicated_log_path_init(pdev);
-	} else {
-		WMT_PLAT_PR_ERR("consys emi memory address gConEmiPhyBase invalid\n");
+	if (wmt_consys_ic_ops->consys_ic_pmic_get_from_dts) {
+		iRet = wmt_consys_ic_ops->consys_ic_pmic_get_from_dts(pdev);
+		if (iRet)
+			return iRet;
 	}
+
+	if (wmt_consys_ic_ops->consys_ic_store_reset_control) {
+		iRet = wmt_consys_ic_ops->consys_ic_store_reset_control(pdev);
+		if (iRet)
+			return iRet;
+	}
+
+	iRet = mtk_wmt_get_emi(pdev);
+	if (iRet)
+		return iRet;
+
+	if (wmt_consys_ic_ops->consys_ic_emi_mpu_set_region_protection)
+		wmt_consys_ic_ops->consys_ic_emi_mpu_set_region_protection();
+	if (wmt_consys_ic_ops->consys_ic_emi_set_remapping_reg)
+		wmt_consys_ic_ops->consys_ic_emi_set_remapping_reg();
+
+	/*
+	 * The power domain driver has the domain down as off whatever state it
+	 * was left in (the bootloader leaves it off, with the MCU's reset
+	 * released). Hold the MCU in reset, and take the domain through a
+	 * cycle so that it really is off.
+	 */
+	if (wmt_consys_ic_ops->consys_ic_hw_reset_bit_set)
+		wmt_consys_ic_ops->consys_ic_hw_reset_bit_set(ENABLE);
+
+	iRet = devm_pm_runtime_enable(&pdev->dev);
+	if (iRet)
+		return iRet;
+
+	if (wmt_consys_ic_ops->consys_ic_hw_power_ctrl) {
+		iRet = wmt_consys_ic_ops->consys_ic_hw_power_ctrl(ENABLE);
+		if (iRet) {
+			WMT_PLAT_PR_ERR("CONSYS power domain on fail(%d)\n", iRet);
+			return iRet;
+		}
+		wmt_consys_ic_ops->consys_ic_hw_power_ctrl(DISABLE);
+	}
+
+	if (wmt_consys_ic_ops->consys_ic_emi_coredump_remapping)
+		wmt_consys_ic_ops->consys_ic_emi_coredump_remapping(&pEmibaseaddr, 1);
+	if (wmt_consys_ic_ops->consys_ic_dedicated_log_path_init)
+		wmt_consys_ic_ops->consys_ic_dedicated_log_path_init(pdev);
 
 #ifdef CONFIG_MTK_HIBERNATION
 	WMT_PLAT_PR_INFO("register connsys restore cb for complying with IPOH function\n");
 	register_swsusp_restore_noirq_func(ID_M_CONNSYS, mtk_wcn_consys_hw_restore, NULL);
 #endif
 
-	if (wmt_consys_ic_ops->ic_bt_wifi_share_v33_spin_lock_init)
-		wmt_consys_ic_ops->ic_bt_wifi_share_v33_spin_lock_init();
+	return 0;
+}
 
+static INT32 mtk_wmt_probe(struct platform_device *pdev)
+{
+	INT32 iRet;
 
-	if (wmt_consys_ic_ops->consys_ic_pmic_get_from_dts)
-		wmt_consys_ic_ops->consys_ic_pmic_get_from_dts(pdev);
-
-	consys_pinctrl = devm_pinctrl_get(&pdev->dev);
-	if (IS_ERR(consys_pinctrl)) {
-		WMT_PLAT_PR_ERR("cannot find consys pinctrl.\n");
-		consys_pinctrl = NULL;
+	iRet = mtk_wmt_probe_hw(pdev);
+	if (iRet) {
+		mtk_wmt_forget_hw();
+		return iRet;
 	}
 
-	/* find gps lna gpio number */
-	if (consys_pinctrl) {
-		pinctl_node = of_parse_phandle(pdev->dev.of_node, "pinctrl-3", 0);
-		if (pinctl_node) {
-			pins_node = of_get_child_by_name(pinctl_node, "pins_cmd_dat");
-			if (pins_node) {
-				of_property_read_u32(pins_node, "pins", &pinmux);
-				gps_lna_pin_num = (pinmux >> 8) & 0xff;
-				WMT_PLAT_PR_INFO("GPS LNA gpio pin number:%d, pinmux:0x%08x.\n",
-						   gps_lna_pin_num, pinmux);
-			}
-		}
-	}
-
-	if (wmt_consys_ic_ops->consys_ic_store_reset_control)
-		wmt_consys_ic_ops->consys_ic_store_reset_control(pdev);
+	/* From here on the CONSYS can be powered on */
+	g_pdev = pdev;
 
 	return 0;
 }
 
-static INT32 mtk_wmt_remove(struct platform_device *pdev)
+static VOID mtk_wmt_remove(struct platform_device *pdev)
 {
-	if (wmt_consys_ic_ops->consys_ic_need_store_pdev) {
-		if (wmt_consys_ic_ops->consys_ic_need_store_pdev() == MTK_WCN_BOOL_TRUE)
-			pm_runtime_disable(&pdev->dev);
-	}
+	/* The WMT core is gone by now; this is for what it may have left on */
+	if (consys_hw_pwr_on)
+		mtk_wcn_consys_hw_pwr_off(gCoClockFlag);
+
+	g_pdev = NULL;
 
 	if (wmt_consys_ic_ops->consys_ic_dedicated_log_path_deinit)
 		wmt_consys_ic_ops->consys_ic_dedicated_log_path_deinit();
 	if (wmt_consys_ic_ops->consys_ic_emi_coredump_remapping)
 		wmt_consys_ic_ops->consys_ic_emi_coredump_remapping(&pEmibaseaddr, 0);
 
-	if (g_pdev)
-		g_pdev = NULL;
-
-	return 0;
+	mtk_wmt_forget_hw();
 }
 
 static INT32 mtk_wmt_suspend(struct platform_device *pdev, pm_message_t state)
@@ -279,19 +355,68 @@ static INT32 mtk_wmt_resume(struct platform_device *pdev)
 	return 0;
 }
 
+/*
+ * The power off flow. It is also what undoes a power on flow that failed
+ * after it had VCN18 on: that one may not have got to turning VCN28 on.
+ */
+static VOID mtk_wcn_consys_hw_reg_off(UINT32 co_clock_type, MTK_WCN_BOOL vcn28_on)
+{
+	if (wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl)
+		wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl(DISABLE);
+	if (wmt_consys_ic_ops->consys_ic_hw_power_ctrl)
+		wmt_consys_ic_ops->consys_ic_hw_power_ctrl(DISABLE);
+	if (co_clock_type) {
+		if (wmt_consys_ic_ops->consys_ic_clock_buffer_ctrl)
+			wmt_consys_ic_ops->consys_ic_clock_buffer_ctrl(DISABLE);
+	}
+
+	if (co_clock_type == 0) {
+		if (wmt_consys_ic_ops->consys_ic_vcn28_hw_mode_ctrl)
+			wmt_consys_ic_ops->consys_ic_vcn28_hw_mode_ctrl(DISABLE);
+		/*turn off VCN28 LDO (with PMIC_WRAP API)" */
+		if (vcn28_on && wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl)
+			wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl(DISABLE);
+	}
+
+	if (wmt_consys_ic_ops->consys_ic_set_if_pinmux)
+		wmt_consys_ic_ops->consys_ic_set_if_pinmux(DISABLE);
+
+	if (wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl)
+		wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl(DISABLE);
+}
+
 INT32 mtk_wcn_consys_hw_reg_ctrl(UINT32 on, UINT32 co_clock_type)
 {
 	INT32 iRet = 0;
+	MTK_WCN_BOOL vcn28_on = MTK_WCN_BOOL_FALSE;
 
 	WMT_PLAT_PR_INFO("CONSYS-HW-REG-CTRL(0x%08x),start\n", on);
+
+	if (!g_pdev) {
+		WMT_PLAT_PR_ERR("no CONSYS device, CONNSYS can not be powered %s!\n", on ? "on" : "off");
+		return -1;
+	}
+
+	/*
+	 * The WMT core may ask for a power off after a power on that failed,
+	 * and for a power on of what it only reset. Neither the regulators nor
+	 * the power domain take being switched twice.
+	 */
+	if ((on != 0) == (consys_hw_reg_on != MTK_WCN_BOOL_FALSE)) {
+		WMT_PLAT_PR_WARN("CONSYS-HW-REG-CTRL(0x%08x),already %s\n", on, on ? "on" : "off");
+		return 0;
+	}
 
 	if (on) {
 		WMT_PLAT_PR_DBG("++\n");
 		if (wmt_consys_ic_ops->consys_ic_reset_emi_coredump)
 			wmt_consys_ic_ops->consys_ic_reset_emi_coredump(pEmibaseaddr);
 
-		if (wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl)
-			wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl(ENABLE);
+		if (wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl) {
+			iRet = wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl(ENABLE);
+			if (iRet)
+				goto finish;
+		}
 
 		if (wmt_consys_ic_ops->consys_ic_set_if_pinmux)
 			wmt_consys_ic_ops->consys_ic_set_if_pinmux(ENABLE);
@@ -315,8 +440,14 @@ INT32 mtk_wcn_consys_hw_reg_ctrl(UINT32 on, UINT32 co_clock_type)
 			/*2.turn on VCN28 LDO (with PMIC_WRAP API)" */
 			if (wmt_consys_ic_ops->consys_ic_vcn28_hw_mode_ctrl)
 				wmt_consys_ic_ops->consys_ic_vcn28_hw_mode_ctrl(ENABLE);
-			if (wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl)
-				wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl(ENABLE);
+			if (wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl) {
+				iRet = wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl(ENABLE);
+				if (iRet) {
+					mtk_wcn_consys_hw_reg_off(co_clock_type, MTK_WCN_BOOL_FALSE);
+					goto finish;
+				}
+				vcn28_on = MTK_WCN_BOOL_TRUE;
+			}
 		}
 
 		/* turn on VCN28 LDO for reading efuse usage */
@@ -327,17 +458,24 @@ INT32 mtk_wcn_consys_hw_reg_ctrl(UINT32 on, UINT32 co_clock_type)
 		if (wmt_consys_ic_ops->consys_ic_hw_spm_clk_gating_enable)
 			wmt_consys_ic_ops->consys_ic_hw_spm_clk_gating_enable();
 		if (wmt_consys_ic_ops->consys_ic_hw_power_ctrl)
-			wmt_consys_ic_ops->consys_ic_hw_power_ctrl(ENABLE);
+			iRet = wmt_consys_ic_ops->consys_ic_hw_power_ctrl(ENABLE);
 
 		udelay(10);
 
-		if (wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl)
+		if (iRet == 0 && wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl)
 			wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl(ENABLE);
 
 		WMT_STEP_DO_ACTIONS_FUNC(STEP_TRIGGER_POINT_POWER_ON_BEFORE_GET_CONNSYS_ID);
 
-		if (wmt_consys_ic_ops->polling_consys_ic_chipid)
-			wmt_consys_ic_ops->polling_consys_ic_chipid();
+		if (iRet == 0 && wmt_consys_ic_ops->polling_consys_ic_chipid)
+			iRet = wmt_consys_ic_ops->polling_consys_ic_chipid();
+		if (iRet) {
+			/* No CONSYS to set up, and none to let the MCU of run */
+			if (co_clock_type)
+				mtk_wcn_consys_hw_efuse_paldo_ctrl(DISABLE, co_clock_type);
+			mtk_wcn_consys_hw_reg_off(co_clock_type, vcn28_on);
+			goto finish;
+		}
 		if (wmt_consys_ic_ops->update_consys_rom_desel_value)
 			wmt_consys_ic_ops->update_consys_rom_desel_value();
 		if (wmt_consys_ic_ops->consys_ic_acr_reg_setting)
@@ -349,31 +487,13 @@ INT32 mtk_wcn_consys_hw_reg_ctrl(UINT32 on, UINT32 co_clock_type)
 
 		msleep(20);
 
+		consys_hw_reg_on = MTK_WCN_BOOL_TRUE;
 	} else {
-		if (wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl)
-			wmt_consys_ic_ops->consys_ic_ahb_clock_ctrl(DISABLE);
-		if (wmt_consys_ic_ops->consys_ic_hw_power_ctrl)
-			wmt_consys_ic_ops->consys_ic_hw_power_ctrl(DISABLE);
-		if (co_clock_type) {
-			if (wmt_consys_ic_ops->consys_ic_clock_buffer_ctrl)
-				wmt_consys_ic_ops->consys_ic_clock_buffer_ctrl(DISABLE);
-		}
-
-		if (co_clock_type == 0) {
-			if (wmt_consys_ic_ops->consys_ic_vcn28_hw_mode_ctrl)
-				wmt_consys_ic_ops->consys_ic_vcn28_hw_mode_ctrl(DISABLE);
-			/*turn off VCN28 LDO (with PMIC_WRAP API)" */
-			if (wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl)
-				wmt_consys_ic_ops->consys_ic_hw_vcn28_ctrl(DISABLE);
-		}
-
-		if (wmt_consys_ic_ops->consys_ic_set_if_pinmux)
-			wmt_consys_ic_ops->consys_ic_set_if_pinmux(DISABLE);
-
-		if (wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl)
-			wmt_consys_ic_ops->consys_ic_hw_vcn18_ctrl(DISABLE);
+		consys_hw_reg_on = MTK_WCN_BOOL_FALSE;
+		mtk_wcn_consys_hw_reg_off(co_clock_type, MTK_WCN_BOOL_TRUE);
 	}
-	WMT_PLAT_PR_INFO("CONSYS-HW-REG-CTRL(0x%08x),finish\n", on);
+finish:
+	WMT_PLAT_PR_INFO("CONSYS-HW-REG-CTRL(0x%08x),finish(%d)\n", on, iRet);
 	return iRet;
 }
 /*tag4 wujun api big difference end*/
@@ -429,9 +549,14 @@ UINT32 mtk_wcn_consys_soc_chipid(VOID)
 		return 0;
 }
 
-struct pinctrl *mtk_wcn_consys_get_pinctrl()
+struct pinctrl *mtk_wcn_consys_get_pinctrl(VOID)
 {
 	return consys_pinctrl;
+}
+
+struct gpio_desc *mtk_wcn_consys_get_ant_sel_gpio(VOID)
+{
+	return consys_ant_sel_gpio;
 }
 
 INT32 mtk_wcn_consys_hw_gpio_ctrl(UINT32 on)
@@ -498,9 +623,20 @@ INT32 mtk_wcn_consys_hw_pwr_on(UINT32 co_clock_type)
 		WMT_PLAT_PR_ERR("EMI base address is invalid, CONNSYS can not be powered on!");
 		return -1;
 	}
-	iRet += mtk_wcn_consys_hw_reg_ctrl(1, co_clock_type);
-	iRet += mtk_wcn_consys_hw_gpio_ctrl(1);
-	mtk_wcn_consys_jtag_set_for_mcu();
+	if (consys_hw_pwr_on) {
+		WMT_PLAT_PR_WARN("CONSYS-HW-PWR-ON, already on\n");
+		return 0;
+	}
+	iRet = mtk_wcn_consys_hw_reg_ctrl(1, co_clock_type);
+	if (iRet == 0) {
+		iRet = mtk_wcn_consys_hw_gpio_ctrl(1);
+		if (iRet)
+			mtk_wcn_consys_hw_reg_ctrl(0, co_clock_type);
+	}
+	if (iRet == 0) {
+		mtk_wcn_consys_jtag_set_for_mcu();
+		consys_hw_pwr_on = MTK_WCN_BOOL_TRUE;
+	}
 
 	WMT_PLAT_PR_INFO("CONSYS-HW-PWR-ON, finish(%d)\n", iRet);
 	return iRet;
@@ -511,8 +647,14 @@ INT32 mtk_wcn_consys_hw_pwr_off(UINT32 co_clock_type)
 	INT32 iRet = 0;
 
 	WMT_PLAT_PR_INFO("CONSYS-HW-PWR-OFF, start\n");
+	if (!consys_hw_pwr_on) {
+		/* as after a power on that failed */
+		WMT_PLAT_PR_WARN("CONSYS-HW-PWR-OFF, already off\n");
+		return 0;
+	}
 	WMT_STEP_DO_ACTIONS_FUNC(STEP_TRIGGER_POINT_BEFORE_POWER_OFF);
 
+	consys_hw_pwr_on = MTK_WCN_BOOL_FALSE;
 	iRet += mtk_wcn_consys_hw_reg_ctrl(0, co_clock_type);
 	iRet += mtk_wcn_consys_hw_gpio_ctrl(0);
 
@@ -526,6 +668,12 @@ INT32 mtk_wcn_consys_hw_rst(UINT32 co_clock_type)
 
 	WMT_PLAT_PR_INFO("CONSYS-HW, hw_rst start, eirq should be disabled before this step\n");
 
+	if (!consys_hw_pwr_on) {
+		/* as after a reset that failed: it is the power on flow that is left to do */
+		WMT_PLAT_PR_WARN("CONSYS-HW, hw_rst of what is off\n");
+		return mtk_wcn_consys_hw_pwr_on(co_clock_type);
+	}
+
 	if (wmt_consys_ic_ops->consys_ic_set_dl_rom_patch_flag)
 		wmt_consys_ic_ops->consys_ic_set_dl_rom_patch_flag(1);
 
@@ -538,6 +686,11 @@ INT32 mtk_wcn_consys_hw_rst(UINT32 co_clock_type)
 
 	/*2. do whole hw power on flow */
 	iRet += mtk_wcn_consys_hw_reg_ctrl(1, co_clock_type);
+	if (iRet) {
+		/* It is off now. The power on flow asks for the eirq again. */
+		consys_hw_pwr_on = MTK_WCN_BOOL_FALSE;
+		mtk_wcn_consys_hw_gpio_ctrl(0);
+	}
 
 	/* Make sure pdma_axi_rready_force_high set to 0 after reset */
 	if (wmt_consys_ic_ops->consys_ic_set_pdma_axi_rready_force_high)
@@ -706,29 +859,51 @@ UINT32 mtk_consys_get_gps_lna_pin_num(VOID)
 INT32 mtk_wcn_consys_reg_ctrl(UINT32 is_write, enum CONSYS_BASE_ADDRESS_INDEX index, UINT32 offset,
 		PUINT32 value)
 {
-	UINT32 reg_info[index*4 + 4];
-	struct device_node *node;
+	struct resource *res;
 	PVOID remap_addr = NULL;
 
-
-	node = g_pdev->dev.of_node;
-	if (node) {
-		if (of_property_read_u32_array(node, "reg", reg_info, ARRAY_SIZE(reg_info))) {
-			WMT_PLAT_PR_ERR("get reg from DTS fail!!\n");
-			return -1;
-		}
-	} else {
+	if (!g_pdev) {
 		WMT_PLAT_PR_ERR("[%s] can't find CONSYS compatible node\n", __func__);
 		return -1;
 	}
 
-	if (reg_info[index*4 + 3] < offset) {
-		WMT_PLAT_PR_ERR("Access overflow of address(0x%x), offset(0x%x)!\n",
-				reg_info[index*4 + 1], reg_info[index*4 + 3]);
+	/*
+	 * MediaTek's device tree has the indexes as "reg" entries of the
+	 * device. Of them only the first is one here; INFRACFG_AO is a regmap,
+	 * and the watchdog and the SPM are left to their drivers.
+	 */
+	switch (index) {
+	case MCU_BASE_INDEX:
+		break;
+	case INFRACFG_AO_BASE_INDEX:
+		if (is_write)
+			return regmap_write(conn_reg.infracfg_regmap, offset, *value) ? -1 : 0;
+		return regmap_read(conn_reg.infracfg_regmap, offset, value) ? -1 : 0;
+	default:
+		WMT_PLAT_PR_ERR("no access to the registers of base index(%d) here\n", index);
 		return -1;
 	}
 
-	remap_addr = ioremap(reg_info[index*4 + 1] + offset, 0x4);
+	res = platform_get_resource(g_pdev, IORESOURCE_MEM, 0);
+	if (!res) {
+		WMT_PLAT_PR_ERR("get reg from DTS fail!!\n");
+		return -1;
+	}
+
+	if (resource_size(res) < offset + 0x4) {
+		WMT_PLAT_PR_ERR("Access overflow of address(%pa), offset(0x%x)!\n",
+				&res->start, offset);
+		return -1;
+	}
+
+	/* These are CONSYS registers: a hang of the bus when it is off */
+	if (!mtk_consys_check_reg_readable()) {
+		WMT_PLAT_PR_ERR("the CONSYS is off, no access to address(%pa), offset(0x%x)!\n",
+				&res->start, offset);
+		return -1;
+	}
+
+	remap_addr = ioremap(res->start + offset, 0x4);
 	if (remap_addr == NULL) {
 		WMT_PLAT_PR_ERR("ioremap fail!\n");
 		return -1;

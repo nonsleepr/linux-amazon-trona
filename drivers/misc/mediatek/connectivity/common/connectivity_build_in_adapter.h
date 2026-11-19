@@ -145,8 +145,6 @@ void connectivity_export_mt6306_set_gpio_dir(unsigned long pin, unsigned long di
 #define KERNEL_spm_resource_req
 #endif
 
-extern void tracing_record_cmdline(struct task_struct *tsk);
-extern void show_stack(struct task_struct *tsk, unsigned long *sp);
 #ifdef CPU_BOOST
 extern void mt_ppm_sysboost_freq(enum ppm_sysboost_user user, unsigned int freq);
 extern void mt_ppm_sysboost_core(enum ppm_sysboost_user user, unsigned int core_num);
@@ -157,9 +155,23 @@ extern void mt_ppm_sysboost_set_freq_limit(enum ppm_sysboost_user user, unsigned
 extern bool spm_resource_req(unsigned int user, unsigned int req_mask);
 #endif
 
-void connectivity_export_show_stack(struct task_struct *tsk, unsigned long *sp);
-void connectivity_export_dump_thread_state(const char *name);
-void connectivity_export_tracing_record_cmdline(struct task_struct *tsk);
+/*
+ * These were calls into scheduler and tracing internals of MediaTek's
+ * kernel. A module can't have them: say what was asked for instead.
+ */
+static inline void connectivity_export_show_stack(struct task_struct *tsk, unsigned long *sp)
+{
+	pr_info("[CONNADP] no stack dump of %s(%d)\n", tsk->comm, tsk->pid);
+}
+
+static inline void connectivity_export_dump_thread_state(const char *name)
+{
+	pr_info("[CONNADP] no thread state dump of %s\n", name);
+}
+
+static inline void connectivity_export_tracing_record_cmdline(struct task_struct *tsk)
+{
+}
 #ifdef CPU_BOOST
 void connectivity_export_mt_ppm_sysboost_freq(enum ppm_sysboost_user user, unsigned int freq);
 void connectivity_export_mt_ppm_sysboost_core(enum ppm_sysboost_user user, unsigned int core_num);
@@ -197,9 +209,7 @@ do {                                                              \
  * GPIO dump information
  ******************************************************************************/
 #ifndef CONFIG_MTK_GPIO
-#define KERNEL_gpio_dump_regs_range connectivity_export_dump_gpio_info
-extern void gpio_dump_regs_range(int start, int end);
-void connectivity_export_dump_gpio_info(int start, int end);
+/* No KERNEL_gpio_dump_regs_range: the pin controller has no register dump */
 int conn_export_file_opened_by_task(struct task_struct *task,
 	struct file *file);
 void conn_export_read_task_name(struct task_struct *task, char *name,

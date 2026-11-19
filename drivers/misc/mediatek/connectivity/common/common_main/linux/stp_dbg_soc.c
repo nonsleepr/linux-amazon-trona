@@ -19,6 +19,7 @@
 #include "wmt_step.h"
 #include "wmt_lib.h"
 #include <linux/ratelimit.h>
+#include <linux/regmap.h>
 
 #define STP_DBG_PAGED_TRACE_SIZE (2048*sizeof(char))
 #define SUB_PKT_SIZE 1024
@@ -532,17 +533,21 @@ UINT32 stp_dbg_soc_read_debug_crs(ENUM_CONNSYS_DEBUG_CR cr)
 	emi_phy_addr = mtk_wcn_consys_soc_get_emi_phy_add();
 
 	if (cr == CONNSYS_EMI_REMAP) {
-		if (emi_phy_addr->emi_remap_offset)
-			return CONSYS_REG_READ(conn_reg.topckgen_base +
-					emi_phy_addr->emi_remap_offset);
-		else
-			STP_DBG_PR_INFO("EMI remap has no value\n");
+		/* INFRACFG_AO has a driver of its own: there is a regmap, not a base */
+		if (emi_phy_addr->emi_remap_offset && conn_reg.infracfg_regmap) {
+			UINT32 value = 0;
+
+			regmap_read(conn_reg.infracfg_regmap, emi_phy_addr->emi_remap_offset, &value);
+			return value;
+		}
+		STP_DBG_PR_INFO("EMI remap has no value\n");
 	}
 
 	if (chip_id == 0x6765 || chip_id == 0x3967 || chip_id == 0x6761)
 		return 0;
 
-	if (conn_reg.mcu_base) {
+	/* the CONSYS's own registers hang the bus when read with it off */
+	if (conn_reg.mcu_base && mtk_consys_check_reg_readable()) {
 		switch (cr) {
 		case CONNSYS_CPU_CLK:
 			return CONSYS_REG_READ(conn_reg.mcu_base + CONSYS_CPU_CLK_STATUS_OFFSET);

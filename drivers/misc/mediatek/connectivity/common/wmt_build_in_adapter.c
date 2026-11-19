@@ -11,6 +11,11 @@
  * See http://www.gnu.org/licenses/gpl-2.0.html for more details.
  */
 /*#define pr_fmt(fmt) KBUILD_MODNAME ": %s: " fmt, __func__*/
+/*
+ * In MediaTek's kernel this file is built in, and exports what is in it to
+ * wmt_drv.ko. Here it is a part of that module: there is nothing to export.
+ */
+
 #include <linux/kernel.h>
 
 #include "wmt_build_in_adapter.h"
@@ -76,14 +81,12 @@ void wmt_export_platform_bridge_register(struct wmt_platform_bridge *cb)
 	bridge.clock_fail_dump_cb = cb->clock_fail_dump_cb;
 	CONNADP_INFO_FUNC("\n");
 }
-EXPORT_SYMBOL(wmt_export_platform_bridge_register);
 
 void wmt_export_platform_bridge_unregister(void)
 {
 	memset(&bridge, 0, sizeof(struct wmt_platform_bridge));
 	CONNADP_INFO_FUNC("\n");
 }
-EXPORT_SYMBOL(wmt_export_platform_bridge_unregister);
 
 int mtk_wcn_cmb_stub_query_ctrl(void)
 {
@@ -128,13 +131,10 @@ static msdc_sdio_irq_handler_t mtk_wcn_cmb_sdio_eirq_handler;
 static void *mtk_wcn_cmb_sdio_eirq_data;
 
 unsigned int wifi_irq = 0xffffffff;
-EXPORT_SYMBOL(wifi_irq);
 
 pm_callback_t mtk_wcn_cmb_sdio_pm_cb;
-EXPORT_SYMBOL(mtk_wcn_cmb_sdio_pm_cb);
 
 void *mtk_wcn_cmb_sdio_pm_data;
-EXPORT_SYMBOL(mtk_wcn_cmb_sdio_pm_data);
 
 static int _mtk_wcn_sdio_irq_flag_set(int flag)
 {
@@ -152,7 +152,6 @@ int wmt_export_mtk_wcn_sdio_irq_flag_set(int flag)
 {
 	return _mtk_wcn_sdio_irq_flag_set(flag);
 }
-EXPORT_SYMBOL(wmt_export_mtk_wcn_sdio_irq_flag_set);
 
 static irqreturn_t mtk_wcn_cmb_sdio_eirq_handler_stub(int irq, void *data)
 {
@@ -231,5 +230,4 @@ void wmt_export_mtk_wcn_cmb_sdio_disable_eirq(void)
 {
 	mtk_wcn_cmb_sdio_disable_eirq();
 }
-EXPORT_SYMBOL(wmt_export_mtk_wcn_cmb_sdio_disable_eirq);
 

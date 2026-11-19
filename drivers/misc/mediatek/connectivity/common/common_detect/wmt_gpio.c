@@ -252,7 +252,14 @@ const PUINT8 gpio_pin_name[GPIO_PIN_ID_MAX] = {"gpio_combo_ldo_en_pin",
 					"gpio_chip_wake_up_pin"
 					};
 
-GPIO_CTRL_INFO gpio_ctrl_info;
+/* No pin is there until wmt_gpio_init() has found it: for a combo chip only */
+GPIO_CTRL_INFO gpio_ctrl_info = {
+	.gpio_ctrl_state = {
+		[0 ... GPIO_PIN_ID_MAX - 1] = {
+			.gpio_num = DEFAULT_PIN_ID,
+		},
+	},
+};
 
 /*******************************************************************************
 *                              F U N C T I O N S
@@ -297,10 +304,10 @@ INT32 wmt_gpio_init(struct platform_device *pdev)
 {
 	INT32 iret = 0;
 	UINT32 i, j;
-	struct device_node *node;
+	struct gpio_desc *desc;
 
-	node = of_find_compatible_node(NULL, NULL, "mediatek,connectivity-combo");
-	if (!node) {
+	/* The "mediatek,connectivity-combo" node is the one of this device */
+	if (!pdev->dev.of_node) {
 		for (i = 0; i < GPIO_PIN_ID_MAX; i++)
 			gpio_ctrl_info.gpio_ctrl_state[i].gpio_num = DEFAULT_PIN_ID;
 		pr_err("wmt_gpio:can't find device tree node!\n");
@@ -309,12 +316,19 @@ INT32 wmt_gpio_init(struct platform_device *pdev)
 	}
 
 	gpio_ctrl_info.pinctrl_info = devm_pinctrl_get(&pdev->dev);
+	if (IS_ERR(gpio_ctrl_info.pinctrl_info))
+		gpio_ctrl_info.pinctrl_info = NULL;
 	if (gpio_ctrl_info.pinctrl_info) {
 		for (i = 0; i < GPIO_PIN_ID_MAX; i++) {
-			gpio_ctrl_info.gpio_ctrl_state[i].gpio_num = of_get_named_gpio(node,
-					gpio_pin_name[i], 0);
-			if (gpio_ctrl_info.gpio_ctrl_state[i].gpio_num < 0)
-				gpio_ctrl_info.gpio_ctrl_state[i].gpio_num = DEFAULT_PIN_ID;
+			/*
+			 * As "<pin name>-gpios" properties; the pins are
+			 * driven to the level asked for, whatever their flags.
+			 */
+			desc = devm_gpiod_get_optional(&pdev->dev, gpio_pin_name[i], GPIOD_ASIS);
+			if (IS_ERR(desc))
+				desc = NULL;
+			gpio_ctrl_info.gpio_ctrl_state[i].gpio_desc = desc;
+			gpio_ctrl_info.gpio_ctrl_state[i].gpio_num = desc ? desc_to_gpio(desc) : DEFAULT_PIN_ID;
 			if (gpio_ctrl_info.gpio_ctrl_state[i].gpio_num != DEFAULT_PIN_ID) {
 				for (j = 0; j < GPIO_STATE_MAX; j++) {
 					if (strlen(gpio_state_name[i][j]) != 0) {
@@ -350,10 +364,10 @@ INT32 wmt_gpio_init(struct platform_device *pdev)
 			pr_err("wmt_gpio:set GPIO_COMBO_PMU_EN_PIN to GPIO_PULL_DIS fail, is NULL!\n");
 
 		if (gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_PMU_EN_PIN].gpio_num != DEFAULT_PIN_ID) {
-			gpio_direction_output(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_PMU_EN_PIN].gpio_num,
+			gpiod_direction_output_raw(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_PMU_EN_PIN].gpio_desc,
 					0);
 			pr_err("wmt_gpio:set GPIO_COMBO_PMU_EN_PIN out to 0: %d!\n",
-					gpio_get_value(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_PMU_EN_PIN].gpio_num));
+					gpiod_get_raw_value(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_PMU_EN_PIN].gpio_desc));
 		}
 
 		if (gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_RST_PIN].gpio_state[GPIO_PULL_DIS]) {
@@ -363,10 +377,10 @@ INT32 wmt_gpio_init(struct platform_device *pdev)
 			pr_err("wmt_gpio:set GPIO_COMBO_RST_PIN to GPIO_PULL_DIS fail, is NULL!\n");
 
 		if (gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_RST_PIN].gpio_num != DEFAULT_PIN_ID) {
-			gpio_direction_output(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_RST_PIN].gpio_num,
+			gpiod_direction_output_raw(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_RST_PIN].gpio_desc,
 					0);
 			pr_err("wmt_gpio:set GPIO_COMBO_RST_PIN out to 0: %d!\n",
-					gpio_get_value(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_RST_PIN].gpio_num));
+					gpiod_get_raw_value(gpio_ctrl_info.gpio_ctrl_state[GPIO_COMBO_RST_PIN].gpio_desc));
 		}
 
 		if (gpio_ctrl_info.gpio_ctrl_state[GPIO_WIFI_EINT_PIN].gpio_state[GPIO_IN_PULLUP]) {
@@ -432,6 +446,8 @@ INT32 wmt_gpio_deinit(VOID)
 
 	for (i = 0; i < GPIO_PIN_ID_MAX; i++) {
 		gpio_ctrl_info.gpio_ctrl_state[i].gpio_num = DEFAULT_PIN_ID;
+		/* the descriptor itself goes with the device */
+		gpio_ctrl_info.gpio_ctrl_state[i].gpio_desc = NULL;
 		if (gpio_ctrl_info.gpio_ctrl_state[i].gpio_num != DEFAULT_PIN_ID) {
 			for (j = 0; j < GPIO_STATE_MAX; j++) {
 				if (strlen(gpio_state_name[i][j]) != 0)

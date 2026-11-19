@@ -48,7 +48,9 @@
 #include <linux/mmc/sdio_func.h>
 #include <linux/mmc/sdio_ids.h>
 #include <linux/mmc/sdio.h>
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 #include <sdio_ops.h>
+#endif
 
 #include <linux/mm.h>
 #include <linux/firmware.h>
@@ -329,13 +331,27 @@ extern VOID mtk_wcn_hif_sdio_set_drvdata(MTK_WCN_HIF_SDIO_CLTCTX ctx, PVOID priv
 
 extern PVOID mtk_wcn_hif_sdio_get_drvdata(MTK_WCN_HIF_SDIO_CLTCTX ctx);
 
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 extern INT32 mtk_wcn_hif_sdio_wmt_control(WMT_SDIO_FUNC_TYPE func_type, MTK_WCN_BOOL is_on);
+#else
+static inline INT32 mtk_wcn_hif_sdio_wmt_control(WMT_SDIO_FUNC_TYPE func_type, MTK_WCN_BOOL is_on)
+{
+	return HIF_SDIO_ERR_FAIL;
+}
+#endif
 
 extern INT32 mtk_wcn_hif_sdio_bus_set_power(MTK_WCN_HIF_SDIO_CLTCTX ctx, UINT32 pwrState);
 
 extern VOID mtk_wcn_hif_sdio_get_dev(MTK_WCN_HIF_SDIO_CLTCTX ctx, struct device **dev);
 
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 extern INT32 mtk_wcn_hif_sdio_update_cb_reg(INT32(*ts_update)(VOID));
+#else
+static inline INT32 mtk_wcn_hif_sdio_update_cb_reg(INT32(*ts_update)(VOID))
+{
+	return 0;
+}
+#endif
 
 extern VOID mtk_wcn_hif_sdio_enable_irq(MTK_WCN_HIF_SDIO_CLTCTX ctx, MTK_WCN_BOOL enable);
 

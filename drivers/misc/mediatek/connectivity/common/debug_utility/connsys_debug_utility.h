@@ -14,9 +14,18 @@
 #ifndef _CONNSYS_DEBUG_UTILITY_H_
 #define _CONNSYS_DEBUG_UTILITY_H_
 
-#include "connsys_debug_utility_emi.h"
 #include <linux/types.h>
 #include <linux/compiler.h>
+#include <linux/errno.h>
+
+/*
+ * connsys_debug_utility.c (the firmware's "dedicated log path" through the
+ * shared memory) is not built here: MediaTek's source drop lacks files it
+ * needs. The WMT core calls the entry points below whether it is or not.
+ */
+#ifdef CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH
+#include "connsys_debug_utility_emi.h"
+#endif
 
 
 /*******************************************************************************
@@ -43,6 +52,7 @@ typedef void (*CONNLOG_EVENT_CB) (void);
 ********************************************************************************
 */
 
+#ifdef CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH
 /* Common Driver API */
 int connsys_dedicated_log_path_apsoc_init(phys_addr_t emiaddr, unsigned int irq_num, unsigned int irq_flag);
 void connsys_dedicated_log_path_apsoc_deinit(void);
@@ -64,5 +74,21 @@ ssize_t connsys_log_read(int conn_type, char *buf, size_t count);
 int connsys_log_alarm_enable(unsigned int sec);
 int connsys_log_alarm_disable(void);
 int connsys_log_blank_state_changed(int blank_state);
+#else
+static inline int connsys_log_alarm_enable(unsigned int sec)
+{
+	return -ENODEV;
+}
+
+static inline int connsys_log_alarm_disable(void)
+{
+	return -ENODEV;
+}
+
+static inline int connsys_log_blank_state_changed(int blank_state)
+{
+	return -1;
+}
+#endif /* CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH */
 
 #endif /*_CONNSYS_DEBUG_UTILITY_H_*/

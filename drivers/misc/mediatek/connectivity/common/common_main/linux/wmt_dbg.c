@@ -675,7 +675,12 @@ static INT32 wmt_dbg_ap_reg_read(INT32 par1, INT32 par2, INT32 par3)
 	PUINT8 ap_reg_base = NULL;
 
 	WMT_INFO_FUNC("AP register read, reg address:0x%x\n", par2);
-	ap_reg_base = ioremap_nocache(par2, 0x4);
+	/* a register of the CONSYS hangs the bus when the CONSYS is off */
+	if (mtk_consys_is_connsys_reg(par2) && !mtk_consys_check_reg_readable()) {
+		WMT_ERR_FUNC("AP register read, the CONSYS is off!\n");
+		return 0;
+	}
+	ap_reg_base = ioremap(par2, 0x4);
 	if (ap_reg_base) {
 		value = readl(ap_reg_base);
 		WMT_INFO_FUNC("AP register read, reg address:0x%x, value:0x%x\n", par2, value);
@@ -693,7 +698,12 @@ static INT32 wmt_dbg_ap_reg_write(INT32 par1, INT32 par2, INT32 par3)
 
 	WMT_INFO_FUNC("AP register write, reg address:0x%x, value:0x%x\n", par2, par3);
 
-	ap_reg_base = ioremap_nocache(par2, 0x4);
+	/* a register of the CONSYS hangs the bus when the CONSYS is off */
+	if (mtk_consys_is_connsys_reg(par2) && !mtk_consys_check_reg_readable()) {
+		WMT_ERR_FUNC("AP register write, the CONSYS is off!\n");
+		return 0;
+	}
+	ap_reg_base = ioremap(par2, 0x4);
 	if (ap_reg_base) {
 		writel(par3, ap_reg_base);
 		value = readl(ap_reg_base);
@@ -1482,10 +1492,10 @@ ssize_t wmt_dbg_write(struct file *filp, const char __user *buffer, size_t count
 
 INT32 wmt_dev_dbg_setup(VOID)
 {
-	static const struct file_operations wmt_dbg_fops = {
-		.owner = THIS_MODULE,
-		.read = wmt_dbg_read,
-		.write = wmt_dbg_write,
+	static const struct proc_ops wmt_dbg_fops = {
+		.proc_read = wmt_dbg_read,
+		.proc_write = wmt_dbg_write,
+		.proc_lseek = default_llseek,
 	};
 	INT32 i_ret = 0;
 

@@ -16,10 +16,9 @@
 #define _WMT_GPIO_H_
 
 #include <linux/of.h>
-#include <linux/of_gpio.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/pinctrl/pinctrl.h>
-#include <linux/gpio.h>
+#include <linux/gpio/consumer.h>
 #include <linux/platform_device.h>
 #include "osal.h"
 
@@ -77,7 +76,8 @@ typedef enum _ENUM_GPIO_STATE_ID {
 } ENUM_GPIO_STATE_ID, *P_ENUM_GPIO_STATE_ID;
 
 typedef struct _GPIO_CTRL_STATE {
-	INT32 gpio_num;
+	INT32 gpio_num;		/* DEFAULT_PIN_ID if there is no such pin; for the log otherwise */
+	struct gpio_desc *gpio_desc;
 	struct pinctrl_state *gpio_state[GPIO_STATE_MAX];
 } GPIO_CTRL_STATE, *P_GPIO_CTRL_STATE;
 

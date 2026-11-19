@@ -26,11 +26,29 @@ typedef struct _MTK_WCN_HIF_SDIO_CHIP_INFO_ {
 	unsigned int chipId;
 } MTK_WCN_HIF_SDIO_CHIP_INFO, *P_MTK_WCN_HIF_SDIO_CHIP_INFO;
 
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 extern int sdio_detect_exit(void);
 extern int sdio_detect_init(void);
 extern int sdio_detect_query_chipid(int waitFlag);
 extern int hif_sdio_is_chipid_valid(int chipId);
 
 extern int sdio_detect_do_autok(int chipId);
+#else
+/* Without external combo chip support there is nothing to find on SDIO */
+static inline int sdio_detect_exit(void)
+{
+	return 0;
+}
+
+static inline int sdio_detect_init(void)
+{
+	return 0;
+}
+
+static inline int sdio_detect_do_autok(int chipId)
+{
+	return 0;
+}
+#endif
 
 #endif

@@ -42,6 +42,26 @@ static int gWmtDetectMajor = WMT_DETECT_MAJOR;
 static struct cdev gWmtDetectCdev;
 unsigned int gWmtDetectDbgLvl = WMT_DETECT_LOG_INFO;
 static ENUM_WMT_CHIP_TYPE g_chip_type = WMT_CHIP_TYPE_INVALID;
+/* mtk_wcn_common_drv_init() is for once, whoever asks for it */
+static DEFINE_MUTEX(g_common_drv_init_lock);
+static int g_common_drv_init_done;
+
+static int wmt_detect_common_drv_init(void)
+{
+	int ret = 0;
+
+	mutex_lock(&g_common_drv_init_lock);
+	if (g_common_drv_init_done) {
+		WMT_DETECT_PR_INFO("common driver init is done already\n");
+	} else {
+		ret = mtk_wcn_common_drv_init();
+		if (ret == 0)
+			g_common_drv_init_done = 1;
+	}
+	mutex_unlock(&g_common_drv_init_lock);
+
+	return ret;
+}
 
 static int wmt_detect_open(struct inode *inode, struct file *file)
 {
@@ -126,7 +146,7 @@ static long wmt_detect_unlocked_ioctl(struct file *filp, unsigned int cmd, unsig
 		retval = do_connectivity_driver_init(arg);
 #else
 		WMT_DETECT_PR_INFO("kernel object mode\n");
-		retval = mtk_wcn_common_drv_init();
+		retval = wmt_detect_common_drv_init();
 #endif
 		break;
 
@@ -243,10 +263,9 @@ static int wmt_detect_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int wmt_detect_remove(struct platform_device *pdev)
+static void wmt_detect_remove(struct platform_device *pdev)
 {
 	wmt_gpio_deinit();
-	return 0;
 }
 #endif
 
@@ -297,6 +316,9 @@ static int wmt_detect_driver_init(void)
 	dev_t devID = MKDEV(gWmtDetectMajor, 0);
 	int cdevErr = -1;
 	int ret = -1;
+#ifndef MTK_WCN_COMBO_CHIP_SUPPORT
+	int chip_id;
+#endif
 
 	/*init SDIO-DETECT module */
 	sdio_detect_init();
@@ -322,7 +344,7 @@ static int wmt_detect_driver_init(void)
 		goto err1;
 	}
 
-	pDetectClass = class_create(THIS_MODULE, WMT_DETECT_DEVICE_NAME);
+	pDetectClass = class_create(WMT_DETECT_DEVICE_NAME);
 	if (IS_ERR(pDetectClass)) {
 		WMT_DETECT_PR_ERR("class create fail, error code(%ld)\n", PTR_ERR(pDetectClass));
 		goto err1;
@@ -336,24 +358,43 @@ static int wmt_detect_driver_init(void)
 
 	WMT_DETECT_PR_INFO("driver(major %d) installed success\n", gWmtDetectMajor);
 
+#ifndef MTK_WCN_COMBO_CHIP_SUPPORT
+	/*
+	 * From here MediaTek's loader takes over through the device above: it
+	 * looks for an external combo chip, tells the chip ID it found or
+	 * else the SoC's (COMBO_IOCTL_SET_CHIP_ID), and has the WMT driver
+	 * initialised (COMBO_IOCTL_DO_MODULE_INIT). Without support for combo
+	 * chips there is nothing to look for, and no need of a loader.
+	 */
+	chip_id = wmt_plat_get_soc_chipid();
+	WMT_DETECT_PR_INFO("chipid(0x%x)\n", chip_id);
+	mtk_wcn_wmt_set_chipid(chip_id);
+	wmt_detect_set_chip_type(chip_id);
+
+	ret = wmt_detect_common_drv_init();
+	if (ret) {
+		WMT_DETECT_PR_ERR("common driver init fail ret:%d\n", ret);
+		ret = -ENODEV;
+		device_destroy(pDetectClass, devID);
+		pDetectDev = NULL;
+		goto err2;
+	}
+#endif
+
 	return 0;
 
 err2:
 
-	if (pDetectClass) {
+	if (!IS_ERR_OR_NULL(pDetectClass))
 		class_destroy(pDetectClass);
-		pDetectClass = NULL;
-	}
+	pDetectClass = NULL;
 
 err1:
 
 	if (cdevErr == 0)
 		cdev_del(&gWmtDetectCdev);
 
-	if (ret == 0) {
-		unregister_chrdev_region(devID, WMT_DETECT_DEV_NUM);
-		gWmtDetectMajor = -1;
-	}
+	unregister_chrdev_region(devID, WMT_DETECT_DEV_NUM);
 
 err0:
 	sdio_detect_exit();
@@ -369,7 +410,8 @@ static void wmt_detect_driver_exit(void)
 {
 	dev_t dev = MKDEV(gWmtDetectMajor, 0);
 
-	mtk_wcn_common_drv_exit();
+	if (g_common_drv_init_done)
+		mtk_wcn_common_drv_exit();
 
 	if (pDetectDev) {
 		device_destroy(pDetectClass, dev);
@@ -397,6 +439,7 @@ static void wmt_detect_driver_exit(void)
 module_init(wmt_detect_driver_init);
 module_exit(wmt_detect_driver_exit);
 
+MODULE_DESCRIPTION("MediaTek WMT core for the connectivity subsystem");
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Zhiguo.Niu & Chaozhong.Liang @ MBJ/WCNSE/SS1");
 

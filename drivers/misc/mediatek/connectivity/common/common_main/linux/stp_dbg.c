@@ -49,6 +49,7 @@
 #ifdef CONFIG_AMAZON_METRICS_LOG
 #include <linux/metricslog.h>
 #endif
+#include "mtk_conn_compat.h"
 
 
 
@@ -148,31 +149,32 @@ INT32 __weak mtk_btif_rxd_be_blocked_flag_get(VOID)
 }
 
 /* operation definition */
-static struct genl_ops stp_dbg_gnl_ops_array[] = {
+static const struct genl_ops stp_dbg_gnl_ops_array[] = {
 	{
 		.cmd = STP_DBG_COMMAND_BIND,
 		.flags = 0,
-		.policy = stp_dbg_genl_policy,
 		.doit = stp_dbg_nl_bind,
 		.dumpit = NULL,
 	},
 	{
 		.cmd = STP_DBG_COMMAND_RESET,
 		.flags = 0,
-		.policy = stp_dbg_genl_policy,
 		.doit = stp_dbg_nl_reset,
 		.dumpit = NULL,
 	},
 };
 
+/* the ID is generated; the policy is the family's, for all operations */
 static struct genl_family stp_dbg_gnl_family = {
-	.id = GENL_ID_GENERATE,
 	.hdrsize = 0,
 	.name = STP_DBG_FAMILY_NAME,
 	.version = 1,
 	.maxattr = STP_DBG_ATTR_MAX,
+	.policy = stp_dbg_genl_policy,
+	.module = THIS_MODULE,
 	.ops = stp_dbg_gnl_ops_array,
 	.n_ops = ARRAY_SIZE(stp_dbg_gnl_ops_array),
+	.resv_start_op = __STP_DBG_COMMAND_MAX,
 };
 /* stp_dbg_core_dump_timeout_handler - handler of coredump timeout
  * @ data - core dump object's pointer
@@ -2276,8 +2278,10 @@ INT32 stp_dbg_poll_cpupcr(UINT32 times, UINT32 sleep, UINT32 cmd)
 	for (i = 0; i < times; i++) {
 		switch (chip_type) {
 		case WMT_CHIP_TYPE_COMBO:
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 			stp_sdio_rw_retry(HIF_TYPE_READL, STP_SDIO_RETRY_LIMIT,
 					g_stp_sdio_host_info.sdio_cltctx, SWPCDBGR, &value, 0);
+#endif
 			g_stp_dbg_cpupcr->buffer[g_stp_dbg_cpupcr->count] = value;
 			osal_get_local_time(&(g_stp_dbg_cpupcr->sec_buffer[g_stp_dbg_cpupcr->count]),
 					&(g_stp_dbg_cpupcr->nsec_buffer[g_stp_dbg_cpupcr->count]));
@@ -2339,6 +2343,7 @@ INT32 stp_dbg_poll_cpupcr(UINT32 times, UINT32 sleep, UINT32 cmd)
 					  stp_dbg_soc_read_debug_crs(CONNSYS_EMI_REMAP));
 		}
 
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 		chip_id = mtk_wcn_wmt_chipid_query();
 		if (chip_id == 0x6632) {
 			for (i = 0; i < 8; i++) {
@@ -2353,6 +2358,7 @@ INT32 stp_dbg_poll_cpupcr(UINT32 times, UINT32 sleep, UINT32 cmd)
 				cccr_value = 0x0;
 			}
 		}
+#endif
 		/* Need in platform code - mtxxxx.c to provide function implementation */
 		mtk_wcn_consys_hang_debug();
 	}
@@ -2921,6 +2927,15 @@ INT32 stp_dbg_start_emi_dump(VOID)
 
 	if (!g_core_dump) {
 		STP_DBG_PR_ERR("invalid pointer!\n");
+		return -1;
+	}
+
+	/*
+	 * The dump is made by a process that listens on netlink, and that
+	 * tells when it is done. Without one there is nothing to wait for.
+	 */
+	if (num_bind_process == 0) {
+		STP_DBG_PR_INFO("no listening process, no emi dump\n");
 		return -1;
 	}
 

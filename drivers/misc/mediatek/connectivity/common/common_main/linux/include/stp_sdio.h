@@ -294,7 +294,11 @@ extern MTK_WCN_STP_SDIO_HIF_INFO g_stp_sdio_host_info;
 extern INT32 mtk_wcn_hif_sdio_client_reg(const MTK_WCN_HIF_SDIO_CLTINFO *pinfo);
 extern INT32 stp_sdio_reg_rw(INT32 func_num, INT32 direction,  UINT32 offset, UINT32 value);
 
-#if STP_SDIO_DBG_SUPPORT && (STP_SDIO_TXDBG || STP_SDIO_TXPERFDBG)
+#ifndef MTK_WCN_COMBO_CHIP_SUPPORT
+static inline VOID stp_sdio_txdbg_dump(VOID)
+{
+}
+#elif STP_SDIO_DBG_SUPPORT && (STP_SDIO_TXDBG || STP_SDIO_TXPERFDBG)
 VOID stp_sdio_txdbg_dump(VOID);
 #endif
 
@@ -309,6 +313,7 @@ INT32 stp_sdio_deep_sleep_flag_set(MTK_WCN_BOOL flag);
 *                              F U N C T I O N S
 ********************************************************************************
 */
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 INT32 stp_sdio_rw_retry(ENUM_STP_SDIO_HIF_TYPE_T type, UINT32 retry_limit,
 		MTK_WCN_HIF_SDIO_CLTCTX clt_ctx, UINT32 offset, PUINT32 pData, UINT32 len);
 VOID stp_sdio_retry_flag_ctrl(INT32 flag);
@@ -317,6 +322,26 @@ INT32 stp_sdio_wake_up_ctrl(MTK_WCN_HIF_SDIO_CLTCTX ctx);
 VOID stp_sdio_dump_register(VOID);
 INT32 stp_sdio_issue_fake_coredump(UINT8 *str);
 VOID stp_sdio_dump_info(MTK_WCN_STP_SDIO_HIF_INFO *p_info);
+#else
+/* Without external combo chip support STP never runs over SDIO */
+static inline VOID stp_sdio_retry_flag_ctrl(INT32 flag)
+{
+}
+
+static inline INT32 stp_sdio_retry_flag_get(VOID)
+{
+	return 0;
+}
+
+static inline INT32 stp_sdio_wake_up_ctrl(MTK_WCN_HIF_SDIO_CLTCTX ctx)
+{
+	return -1;
+}
+
+static inline VOID stp_sdio_dump_register(VOID)
+{
+}
+#endif
 
 
 #endif				/* _STP_SDIO_H */

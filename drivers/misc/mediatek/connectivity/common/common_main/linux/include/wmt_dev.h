@@ -41,11 +41,44 @@ extern LONG wmt_dev_tm_temp_query(VOID);
 INT32 mtk_wcn_common_drv_init(VOID);
 VOID mtk_wcn_common_drv_exit(VOID);
 
+#ifdef MTK_WCN_COMBO_CHIP_SUPPORT
 int mtk_wcn_hif_sdio_drv_init(VOID);
 int mtk_wcn_stp_uart_drv_init(VOID);
 int mtk_wcn_stp_sdio_drv_init(VOID);
 int mtk_wcn_hif_sdio_driver_exit(VOID);
 int mtk_wcn_stp_sdio_drv_exit(VOID);
 int mtk_wcn_stp_uart_drv_exit(VOID);
+#else
+/* Without external combo chip support there are no SDIO and UART drivers */
+static inline int mtk_wcn_hif_sdio_drv_init(VOID)
+{
+	return 0;
+}
+
+static inline int mtk_wcn_stp_uart_drv_init(VOID)
+{
+	return 0;
+}
+
+static inline int mtk_wcn_stp_sdio_drv_init(VOID)
+{
+	return 0;
+}
+
+static inline int mtk_wcn_hif_sdio_driver_exit(VOID)
+{
+	return 0;
+}
+
+static inline int mtk_wcn_stp_sdio_drv_exit(VOID)
+{
+	return 0;
+}
+
+static inline int mtk_wcn_stp_uart_drv_exit(VOID)
+{
+	return 0;
+}
+#endif
 
 #endif /*_WMT_DEV_H_*/

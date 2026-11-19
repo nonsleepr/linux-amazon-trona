@@ -171,6 +171,15 @@ INT32 __weak mtk_wcn_consys_stp_btif_parser_wmt_evt(const PUINT8 str, UINT32 len
 	return 0;
 }
 
+/*
+ * The STP parser, as the function BTIF calls with what it received. BTIF
+ * calls it through a pointer, and the parser itself is not of that type.
+ */
+static INT32 wmt_ctrl_stp_btif_rx_cb(const UINT8 *p_buf, UINT32 len)
+{
+	return mtk_wcn_stp_parser_data((PUINT8) p_buf, len);
+}
+
 INT32 wmt_ctrl(P_WMT_CTRL_DATA pWmtCtrlData)
 {
 	UINT32 ctrlId = 0;
@@ -552,7 +561,7 @@ INT32 wmt_ctrl_stp_open(P_WMT_CTRL_DATA pWmtCtrlData)
 		}
 
 		/*register stp rx call back to btif */
-		iRet = mtk_wcn_stp_rxcb_register((MTK_WCN_BTIF_RX_CB) mtk_wcn_stp_parser_data);
+		iRet = mtk_wcn_stp_rxcb_register(wmt_ctrl_stp_btif_rx_cb);
 		if (iRet) {
 			WMT_WARN_FUNC("mtk_wcn_stp_rxcb_register fail(%d)\n", iRet);
 			return -2;
@@ -575,18 +584,94 @@ INT32 wmt_ctrl_stp_open(P_WMT_CTRL_DATA pWmtCtrlData)
 }
 
 
+/*
+ * The patch files of a chip, by their index. MediaTek's launcher has them from
+ * a search of the firmware directory: here they are files to ask for by name.
+ */
+static const struct {
+	UINT32 chipId;
+	PINT8 patchNameFmt;
+} wmt_ctrl_patch_names[] = {
+	{0x0788, "ROMv4_be_patch_1_%d_hdr.bin"},
+};
+
+static WMT_PATCH_INFO wmt_ctrl_patch_info[MAX_PATCH_NUM];
+
+/*
+ * This was a request to MediaTek's launcher ("srh_patch"), which answered with
+ * the number of patch files (WMT_IOCTL_SET_PATCH_NUM) and with each one's
+ * name, place in the download sequence and address (WMT_IOCTL_SET_PATCH_INFO).
+ * The files tell all of that themselves. The first byte of u4PatchVer in their
+ * header has the number of patches in its high and the file's place among them
+ * in its low four bits. The address is that byte as zero and the three after
+ * it: what mtk_wcn_soc_normal_patch_dwn() sends as the last of the address
+ * command.
+ */
 INT32 wmt_ctrl_patch_search(P_WMT_CTRL_DATA pWmtCtrlData)
 {
 	P_DEV_WMT pDev = &gDevWmt;	/* single instance */
-	INT32 iRet;
-	UINT8 cmdStr[NAME_MAX + 1] = { 0 };
+	PINT8 pNameFmt = NULL;
+	osal_firmware *pPatch = NULL;
+	P_WMT_PATCH_INFO pPatchinfo = NULL;
+	const UINT8 *pVer = NULL;
+	UINT8 cPatchName[NAME_MAX + 1] = { 0 };
+	UINT32 patchNum = 0;
+	UINT32 downLoadSeq = 0;
+	UINT32 i;
 
-	osal_snprintf(cmdStr, NAME_MAX, "srh_patch");
-	iRet = wmt_ctrl_ul_cmd(pDev, cmdStr);
-	if (iRet) {
-		WMT_WARN_FUNC("wmt_ctrl_ul_cmd fail(%d)\n", iRet);
+	for (i = 0; i < osal_array_size(wmt_ctrl_patch_names); i++) {
+		if (wmt_ctrl_patch_names[i].chipId == pDev->chip_id)
+			pNameFmt = wmt_ctrl_patch_names[i].patchNameFmt;
+	}
+	if (pNameFmt == NULL) {
+		WMT_ERR_FUNC("no patch file names for chip id(0x%x)\n", pDev->chip_id);
 		return -1;
 	}
+
+	osal_memset(wmt_ctrl_patch_info, 0, osal_sizeof(wmt_ctrl_patch_info));
+
+	/* the first file is there in any case, and has the number of them */
+	for (i = 0; i == 0 || i < patchNum; i++) {
+		osal_snprintf(cPatchName, NAME_MAX, pNameFmt, i);
+		if (wmt_dev_patch_get(cPatchName, &pPatch)) {
+			WMT_ERR_FUNC("get patch(%s) fail\n", cPatchName);
+			return -1;
+		}
+		if (pPatch->size < osal_sizeof(WMT_PATCH)) {
+			WMT_ERR_FUNC("patch(%s) size(%zu) error\n", cPatchName, pPatch->size);
+			wmt_dev_patch_put(&pPatch);
+			return -1;
+		}
+		pVer = (const UINT8 *)&((const WMT_PATCH *)pPatch->data)->u4PatchVer;
+		if (i == 0)
+			patchNum = (pVer[0] & 0xF0) >> 4;
+		downLoadSeq = pVer[0] & 0x0F;
+		if (patchNum == 0 || patchNum > MAX_PATCH_NUM || patchNum != (pVer[0] & 0xF0) >> 4 ||
+		    downLoadSeq == 0 || downLoadSeq > patchNum ||
+		    wmt_ctrl_patch_info[downLoadSeq - 1].dowloadSeq != 0) {
+			WMT_ERR_FUNC("patch(%s) dl seq %d of %d(0x%02x) error\n",
+				     cPatchName, downLoadSeq, patchNum, pVer[0]);
+			wmt_dev_patch_put(&pPatch);
+			return -1;
+		}
+
+		pPatchinfo = &wmt_ctrl_patch_info[downLoadSeq - 1];
+		pPatchinfo->dowloadSeq = downLoadSeq;
+		pPatchinfo->addRess[0] = 0x00;
+		pPatchinfo->addRess[1] = pVer[1];
+		pPatchinfo->addRess[2] = pVer[2];
+		pPatchinfo->addRess[3] = pVer[3];
+		osal_strncpy(pPatchinfo->patchName, cPatchName, osal_sizeof(pPatchinfo->patchName) - 1);
+		WMT_INFO_FUNC("patch dl seq %d of %d,name %s,address info 0x%02x,0x%02x,0x%02x,0x%02x\n",
+			      downLoadSeq, patchNum, pPatchinfo->patchName,
+			      pPatchinfo->addRess[0], pPatchinfo->addRess[1],
+			      pPatchinfo->addRess[2], pPatchinfo->addRess[3]);
+		wmt_dev_patch_put(&pPatch);
+	}
+
+	wmt_lib_set_patch_num(patchNum);
+	wmt_lib_set_patch_info(wmt_ctrl_patch_info);
+
 	return 0;
 }
 
@@ -633,21 +718,19 @@ INT32 wmt_ctrl_get_rom_patch_info(P_WMT_CTRL_DATA pWmtCtrlData)
 	PUINT8 pNbuf = NULL;
 	PUINT8 pAbuf = NULL;
 	INT32 ret = 0;
-	UINT8 cmdStr[NAME_MAX + 1] = { 0 };
 
 	type = pWmtCtrlData->au4CtrlData[0];
 	WMT_DBG_FUNC("rom patch type is %d\n", type);
 	pDev->ip_ver = pWmtCtrlData->au4CtrlData[3];
 	WMT_DBG_FUNC("ip version is %x\n", pDev->ip_ver);
 
-	if (!pDev->pWmtRomPatchInfo[WMTDRV_TYPE_WMT]) {
-		osal_snprintf(cmdStr, NAME_MAX, "srh_rom_patch");
-		ret = wmt_ctrl_ul_cmd(pDev, cmdStr);
-		if (ret) {
-			WMT_WARN_FUNC("wmt_ctrl_ul_cmd fail(%d)\n", ret);
-			return -1;
-		}
-	}
+	/*
+	 * This asked MediaTek's launcher for the info ("srh_rom_patch") when
+	 * there was none, and waited for it. There is no launcher: there only
+	 * is what WMT_IOCTL_SET_ROM_PATCH_INFO was used to set.
+	 */
+	if (!pDev->pWmtRomPatchInfo[WMTDRV_TYPE_WMT])
+		WMT_WARN_FUNC("no rom patch info\n");
 
 	if (type < WMTDRV_TYPE_ANT) {
 		pPatchinfo = pDev->pWmtRomPatchInfo[type];
