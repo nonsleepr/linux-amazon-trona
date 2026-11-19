@@ -268,6 +268,17 @@ static INT32 mtk_wmt_probe_hw(struct platform_device *pdev)
 	if (iRet)
 		return iRet;
 
+	/*
+	 * The power domain is this driver's to switch, and only as a step of
+	 * the CONSYS's power sequence. genpd would switch it on in every
+	 * system resume, for any device that is in it, and off again later:
+	 * the CONSYS powered up with no supplies, and with its MCU running
+	 * if its reset happened to be released. Have system sleep leave this
+	 * device, and so its domain, alone. The CONSYS is powered down before
+	 * a system suspend by whoever uses it.
+	 */
+	dev_pm_syscore_device(&pdev->dev, true);
+
 	if (wmt_consys_ic_ops->consys_ic_hw_power_ctrl) {
 		iRet = wmt_consys_ic_ops->consys_ic_hw_power_ctrl(ENABLE);
 		if (iRet) {

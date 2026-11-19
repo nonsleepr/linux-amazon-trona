@@ -334,7 +334,14 @@ static INT32 consys_store_reset_control(struct platform_device *pdev)
 
 static INT32 consys_clk_get_from_dts(struct platform_device *pdev)
 {
-	clk_infra_pmic_conn = devm_clk_get(&pdev->dev, CONSYS_CLK_NAME_PMIC_CONN);
+	/*
+	 * The clock of the PMIC wrapper's channel for the CONSYS, which follows
+	 * the CONSYS's request for its 26MHz reference with PMIC writes.
+	 * MediaTek's kernel never gates it. Keep it on here as well, rather
+	 * than switch it at the very moments the CONSYS raises and drops that
+	 * request: when its power domain goes on and off.
+	 */
+	clk_infra_pmic_conn = devm_clk_get_enabled(&pdev->dev, CONSYS_CLK_NAME_PMIC_CONN);
 	if (IS_ERR(clk_infra_pmic_conn)) {
 		WMT_PLAT_PR_ERR("[CCF]cannot get clk_infra_pmic_conn clock.\n");
 		return PTR_ERR(clk_infra_pmic_conn);
@@ -465,17 +472,9 @@ static INT32 consys_hw_power_ctrl(MTK_WCN_BOOL enable)
 		if (consys_domain_on)
 			return 0;
 
-		/* MediaTek's kernel never gates this one */
-		iRet = clk_prepare_enable(clk_infra_pmic_conn);
-		if (iRet) {
-			WMT_PLAT_PR_ERR("clk_prepare_enable(clk_infra_pmic_conn) fail(%d)\n", iRet);
-			return iRet;
-		}
-
 		iRet = pm_runtime_resume_and_get(consys_dev);
 		if (iRet) {
 			WMT_PLAT_PR_ERR("power domain on fail(%d)\n", iRet);
-			clk_disable_unprepare(clk_infra_pmic_conn);
 			return iRet;
 		}
 		WMT_PLAT_PR_DBG("power domain on ok\n");
@@ -495,7 +494,16 @@ static INT32 consys_hw_power_ctrl(MTK_WCN_BOOL enable)
 		pm_runtime_put_sync(consys_dev);
 		WMT_PLAT_PR_DBG("power domain off calling\n");
 
-		clk_disable_unprepare(clk_infra_pmic_conn);
+		/*
+		 * MediaTek's flow leaves the MCU's reset released here, to
+		 * assert it at the start of the next power on. Don't leave an
+		 * unpowered CONSYS ready to run: whatever switches its domain
+		 * on would start the MCU without its supplies.
+		 */
+		iRet = reset_control_assert(rst_conn_mcu);
+		if (iRet)
+			WMT_PLAT_PR_ERR("assert the MCU's reset fail(%d)\n", iRet);
+		iRet = 0;
 	}
 
 	return iRet;
