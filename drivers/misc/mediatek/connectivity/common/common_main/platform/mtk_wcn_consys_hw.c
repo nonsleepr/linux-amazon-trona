@@ -76,25 +76,9 @@ struct platform_device *g_pdev;
 UINT32 gps_lna_pin_num = 0xffffffff;
 
 #ifdef CONFIG_OF
+/* The one SoC there is a platform file for (see mtk_wcn_get_consys_ic_ops()) */
 const struct of_device_id apwmt_of_ids[] = {
-	{.compatible = "mediatek,mt3967-consys",},
-	{.compatible = "mediatek,mt6570-consys",},
-	{.compatible = "mediatek,mt6580-consys",},
-	{.compatible = "mediatek,mt6735-consys",},
-	{.compatible = "mediatek,mt6739-consys",},
-	{.compatible = "mediatek,mt6755-consys",},
-	{.compatible = "mediatek,mt6757-consys",},
-	{.compatible = "mediatek,mt6758-consys",},
-	{.compatible = "mediatek,mt6759-consys",},
-	{.compatible = "mediatek,mt6763-consys",},
-	{.compatible = "mediatek,mt6797-consys",},
-	{.compatible = "mediatek,mt8127-consys",},
-	{.compatible = "mediatek,mt8163-consys",},
-	{.compatible = "mediatek,mt8167-consys",},
-	{.compatible = "mediatek,mt6775-consys",},
 	{.compatible = "mediatek,mt8183-consys",},
-	{.compatible = "mediatek,mt6765-consys",},
-	{.compatible = "mediatek,mt6761-consys",},
 	{}
 };
 MODULE_DEVICE_TABLE(of, apwmt_of_ids);

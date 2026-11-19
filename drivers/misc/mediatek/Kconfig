@@ -37,6 +37,8 @@ config MTK_BTIF
 config MTK_COMBO
 	tristate "MediaTek WMT core for the connectivity subsystem"
 	depends on MTK_BTIF && m
+	depends on PM && NET && GPIOLIB && PINCTRL && REGULATOR
+	depends on RESET_CONTROLLER
 	select FW_LOADER
 	select CRC32
 	select ZLIB_DEFLATE
@@ -58,9 +60,11 @@ config MTK_COMBO_CHIP_CONSYS_6771
 config MTK_WCN_COMBO_CHIP_SUPPORT
 	bool "External MT66xx combo chips on SDIO or UART"
 	depends on MTK_COMBO && MMC && TTY
+	depends on BROKEN
 	help
 	  The WMT core's support for MediaTek's stand-alone combo chips.
-	  Not needed for a subsystem built into the SoC.
+	  Not needed for a subsystem built into the SoC, and not ported
+	  to this kernel: it doesn't build.
 
 	  If unsure, say N.
 
