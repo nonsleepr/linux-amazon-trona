@@ -327,31 +327,33 @@ int mtk_p2p_cfg80211_del_iface(struct wiphy *wiphy,
 
 int
 mtk_p2p_cfg80211_add_key(struct wiphy *wiphy,
-			 struct net_device *ndev,
-			 u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params);
+			 struct wireless_dev *wdev, int link_id,
+			 u8 key_index, enum nl80211_key_type type, const u8 *mac_addr, struct key_params *params);
 
 int
 mtk_p2p_cfg80211_get_key(struct wiphy *wiphy,
-			 struct net_device *ndev,
+			 struct wireless_dev *wdev, int link_id,
 			 u8 key_index,
-			 bool pairwise,
+			 enum nl80211_key_type type,
 			 const u8 *mac_addr, void *cookie, void (*callback) (void *cookie, struct key_params *));
 
 int
 mtk_p2p_cfg80211_del_key(struct wiphy *wiphy,
-			 struct net_device *ndev, u8 key_index, bool pairwise, const u8 *mac_addr);
+			 struct wireless_dev *wdev, int link_id,
+			 u8 key_index, enum nl80211_key_type type, const u8 *mac_addr);
 
 int
 mtk_p2p_cfg80211_set_default_key(struct wiphy *wiphy,
-				 struct net_device *netdev, u8 key_index, bool unicast, bool multicast);
+				 struct net_device *netdev, int link_id,
+				 u8 key_index, bool unicast, bool multicast);
 
-int mtk_p2p_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev,
+int mtk_p2p_cfg80211_get_station(struct wiphy *wiphy, struct wireless_dev *wdev,
 				const u8 *mac, struct station_info *sinfo);
 
 int mtk_p2p_cfg80211_scan(struct wiphy *wiphy,
 			  struct cfg80211_scan_request *request);
 
-int mtk_p2p_cfg80211_set_wiphy_params(struct wiphy *wiphy, u32 changed);
+int mtk_p2p_cfg80211_set_wiphy_params(struct wiphy *wiphy, int radio_idx, u32 changed);
 
 int mtk_p2p_cfg80211_connect(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_connect_params *sme);
 
@@ -362,17 +364,17 @@ int mtk_p2p_cfg80211_join_ibss(struct wiphy *wiphy, struct net_device *dev, stru
 int mtk_p2p_cfg80211_leave_ibss(struct wiphy *wiphy, struct net_device *dev);
 
 int mtk_p2p_cfg80211_set_txpower(struct wiphy *wiphy,
-				 struct wireless_dev *wdev,
+				 struct wireless_dev *wdev, int radio_idx,
 				 enum nl80211_tx_power_setting type, int mbm);
 
 int mtk_p2p_cfg80211_get_txpower(struct wiphy *wiphy,
-				 struct wireless_dev *wdev,
-				 int *dbm);
+				 struct wireless_dev *wdev, int radio_idx,
+				 unsigned int link_id, int *dbm);
 
 int mtk_p2p_cfg80211_remain_on_channel(struct wiphy *wiphy,
 				       struct wireless_dev *wdev,
 				       struct ieee80211_channel *chan,
-				       unsigned int duration, u64 *cookie);
+				       unsigned int duration, u64 cookie, const u8 *rx_addr);
 
 int mtk_p2p_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
 					      struct wireless_dev *wdev,
@@ -388,35 +390,32 @@ int mtk_p2p_cfg80211_disassoc(struct wiphy *wiphy, struct net_device *dev, struc
 
 int mtk_p2p_cfg80211_start_ap(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_ap_settings *settings);
 
-int mtk_p2p_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_beacon_data *info);
+int mtk_p2p_cfg80211_change_beacon(struct wiphy *wiphy, struct net_device *dev, struct cfg80211_ap_update *info);
 
 int mtk_p2p_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			     struct wireless_dev *wdev,
 			     struct cfg80211_mgmt_tx_params *params,
-			     u64 *cookie);
+			     u64 cookie);
 
 int mtk_p2p_cfg80211_mgmt_tx_cancel_wait(struct wiphy *wiphy,
 					 struct wireless_dev *wdev,
 					 u64 cookie);
 
-int mtk_p2p_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev);
+int mtk_p2p_cfg80211_stop_ap(struct wiphy *wiphy, struct net_device *dev, unsigned int link_id);
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
-int mtk_p2p_cfg80211_del_station(struct wiphy *wiphy, struct net_device *dev, struct station_del_parameters *params);
-#else
-int mtk_p2p_cfg80211_del_station(struct wiphy *wiphy, struct net_device *dev, const u8 *mac);
-#endif
+int
+mtk_p2p_cfg80211_del_station(struct wiphy *wiphy, struct wireless_dev *wdev, struct station_del_parameters *params);
 
 int mtk_p2p_cfg80211_set_channel(struct wiphy *wiphy,
 				 struct cfg80211_chan_def *chandef);
 
-void mtk_p2p_cfg80211_mgmt_frame_register(IN struct wiphy *wiphy,
-					  struct wireless_dev *wdev,
-					  IN u16 frame_type, IN bool reg);
+void mtk_p2p_cfg80211_update_mgmt_frame_registrations(IN struct wiphy *wiphy,
+						      struct wireless_dev *wdev,
+						      IN struct mgmt_frame_regs *upd);
 
 int
 mtk_p2p_cfg80211_set_bitrate_mask(IN struct wiphy *wiphy,
-				  IN struct net_device *dev,
+				  IN struct net_device *dev, IN unsigned int link_id,
 				  IN const u8 *peer, IN const struct cfg80211_bitrate_mask *mask);
 
 #if CONFIG_NL80211_TESTMODE

@@ -197,6 +197,14 @@ VOID HifDmaInit(GL_HIF_INFO_T *HifInfo)
 
 VOID HifDmaUnInit(GL_HIF_INFO_T *HifInfo)
 {
+#if !defined(CONFIG_MTK_CLKMGR)
+#ifdef CONFIG_OF
+	/* this runs whenever WIFI is switched off, not only when the device goes */
+	if (!IS_ERR_OR_NULL(HifInfo->clk_wifi_dma))
+		devm_clk_put(HifInfo->Dev, HifInfo->clk_wifi_dma);
+	HifInfo->clk_wifi_dma = NULL;
+#endif
+#endif
 	iounmap(HifInfo->DmaRegBaseAddr);
 }
 

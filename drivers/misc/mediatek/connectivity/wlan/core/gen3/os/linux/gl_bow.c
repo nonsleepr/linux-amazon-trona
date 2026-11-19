@@ -354,9 +354,9 @@ static long bow_ampc_ioctl(IN struct file *filp, IN unsigned int cmd, IN OUT uns
 		return -EFAULT;
 	/* permission check */
 	if (_IOC_DIR(cmd) & _IOC_READ)
-		err = !access_ok(VERIFY_WRITE, (void __user *)arg, _IOC_SIZE(cmd));
+		err = !access_ok((void __user *)arg, _IOC_SIZE(cmd));
 	else if (_IOC_DIR(cmd) & _IOC_WRITE)
-		err = !access_ok(VERIFY_READ, (void __user *)arg, _IOC_SIZE(cmd));
+		err = !access_ok((void __user *)arg, _IOC_SIZE(cmd));
 	if (err)
 		return -EFAULT;
 
@@ -875,7 +875,7 @@ static int bowStop(IN struct net_device *prDev)
  * \retval NETDEV_TX_BUSY - on failure, packet will be discarded by upper layer.
  */
 /*----------------------------------------------------------------------------*/
-static int bowHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev)
+static netdev_tx_t bowHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev)
 {
 	P_GLUE_INFO_T prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(prDev));
 
@@ -959,7 +959,7 @@ static int bowHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDe
  * \retval NETDEV_TX_BUSY - on failure, packet will be discarded by upper layer.
  */
 /*----------------------------------------------------------------------------*/
-static int bowHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev)
+static netdev_tx_t bowHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev)
 {
 	P_NETDEV_PRIVATE_GLUE_INFO prNetDevPrivate = (P_NETDEV_PRIVATE_GLUE_INFO) NULL;
 	P_GLUE_INFO_T prGlueInfo = NULL;
@@ -1058,7 +1058,7 @@ BOOLEAN kalInitBowDevice(IN P_GLUE_INFO_T prGlueInfo, IN const char *prDevName)
 		/* 1.2 fill hardware address */
 		COPY_MAC_ADDR(rMacAddr, prAdapter->rMyMacAddr);
 		rMacAddr[0] |= 0x2;	/* change to local administrated address */
-		ether_addr_copy(prGlueInfo->rBowInfo.prDevHandler->dev_addr, rMacAddr);
+		eth_hw_addr_set(prGlueInfo->rBowInfo.prDevHandler, rMacAddr);
 		ether_addr_copy(prGlueInfo->rBowInfo.prDevHandler->perm_addr,
 		       prGlueInfo->rBowInfo.prDevHandler->dev_addr);
 

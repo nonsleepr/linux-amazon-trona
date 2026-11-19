@@ -1075,7 +1075,8 @@ kalP2PIndicateRxMgmtFrame(IN P_GLUE_INFO_T prGlueInfo,
 		cfg80211_rx_mgmt(prGlueP2pInfo->prWdev,	/* struct net_device * dev, */
 				 i4Freq,
 				 RCPI_TO_dBm(HAL_RX_STATUS_GET_RCPI(prSwRfb->prRxStatusGroup3)),
-				 prSwRfb->pvHeader, prSwRfb->u2PacketLen, GFP_ATOMIC);
+				 prSwRfb->pvHeader, prSwRfb->u2PacketLen,
+				 0 /* NL80211_RXMGMT_FLAG_*: none, and not a GFP mask */);
 
 	} while (FALSE);
 
@@ -1184,14 +1185,14 @@ kalP2PGOStationUpdate(IN P_GLUE_INFO_T prGlueInfo,
 			rStationInfo.assoc_req_ies = prCliStaRec->pucAssocReqIe;
 			rStationInfo.assoc_req_ies_len = prCliStaRec->u2AssocReqIeLen;
 
-			cfg80211_new_sta(prGlueInfo->prP2PInfo->aprRoleHandler[ucRoleIndex],
-					/* struct net_device * dev, */
+			cfg80211_new_sta(prGlueInfo->prP2PInfo->aprRoleHandler[ucRoleIndex]->ieee80211_ptr,
+					/* struct wireless_dev *wdev, */
 					 prCliStaRec->aucMacAddr, &rStationInfo, GFP_KERNEL);
 		} else {
 			++prP2pGlueInfo->i4Generation;
 
-			cfg80211_del_sta(prGlueInfo->prP2PInfo->aprRoleHandler[ucRoleIndex],
-					/* struct net_device * dev, */
+			cfg80211_del_sta(prGlueInfo->prP2PInfo->aprRoleHandler[ucRoleIndex]->ieee80211_ptr,
+					/* struct wireless_dev *wdev, */
 					 prCliStaRec->aucMacAddr, GFP_KERNEL);
 		}
 

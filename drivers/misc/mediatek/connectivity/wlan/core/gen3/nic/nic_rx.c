@@ -725,7 +725,7 @@ P_SW_RFB_T nicRxDefragMPDU(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSWRfb, OUT 
 		return (P_SW_RFB_T) NULL;
 	}
 
-	if (prFragInfo->pr1stFrag != (struct SW_RFB *) NULL) {
+	if (prFragInfo->pr1stFrag != (P_SW_RFB_T) NULL) {
 			/* check if the FragNo is cont. */
 			if (ucFragNo != prFragInfo->ucNextFragNo
 #if CFG_SUPPORT_FRAG_ATTACK_DETECTION
@@ -743,10 +743,10 @@ P_SW_RFB_T nicRxDefragMPDU(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSWRfb, OUT 
 
 				/* discard fragments if FragNo is non-cont. */
 				nicRxReturnRFB(prAdapter, prFragInfo->pr1stFrag);
-				prFragInfo->pr1stFrag = (struct SW_RFB *) NULL;
+				prFragInfo->pr1stFrag = (P_SW_RFB_T) NULL;
 
 				nicRxReturnRFB(prAdapter, prSWRfb);
-				return (struct SW_RFB *) NULL;
+				return (P_SW_RFB_T) NULL;
 			}
 		}
 
@@ -4180,7 +4180,7 @@ BOOLEAN nicIsActionFrameValid(IN P_SW_RFB_T prSwRfb)
 
 	if (prSwRfb->u2PacketLen < sizeof(WLAN_ACTION_FRAME) - 1)
 		return FALSE;
-	prActFrame = (struct WLAN_ACTION_FRAME *) prSwRfb->pvHeader;
+	prActFrame = (P_WLAN_ACTION_FRAME) prSwRfb->pvHeader;
 
 	DBGLOG(RSN, TRACE, "Action frame category=%d action=%d\n",
 	       prActFrame->ucCategory, prActFrame->ucAction);

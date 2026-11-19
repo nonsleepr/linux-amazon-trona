@@ -332,7 +332,7 @@ static struct cfg80211_ops mtk_wlan_ops = {
 	.cancel_remain_on_channel = mtk_cfg80211_cancel_remain_on_channel,
 	.mgmt_tx = mtk_cfg80211_mgmt_tx,
 	/* .mgmt_tx_cancel_wait        = mtk_cfg80211_mgmt_tx_cancel_wait, */
-	.mgmt_frame_register = mtk_cfg80211_mgmt_frame_register,
+	.update_mgmt_frame_registrations = mtk_cfg80211_update_mgmt_frame_registrations,
 #ifdef CONFIG_NL80211_TESTMODE
 	.testmode_cmd = mtk_cfg80211_testmode_cmd,
 #endif
@@ -345,6 +345,10 @@ static struct cfg80211_ops mtk_wlan_ops = {
 	.update_ft_ies = mtk_cfg80211_update_ft_ies,
 };
 
+/*
+ * The handlers parse the attributes of their commands themselves: for
+ * cfg80211, which wants a policy for every vendor command, all are raw data.
+ */
 static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 	{
 		{
@@ -352,7 +356,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_GET_CHANNEL_LIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_channel_list
+		.doit = mtk_cfg80211_vendor_get_channel_list,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -360,7 +365,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_SET_COUNTRY_CODE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_country_code
+		.doit = mtk_cfg80211_vendor_set_country_code,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* Roaming */
 	{
@@ -369,7 +375,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_GET_ROAMING_CAPABILITIES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_roaming_capabilities
+		.doit = mtk_cfg80211_vendor_get_roaming_capabilities,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -377,7 +384,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_CONFIG_ROAMING
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_config_roaming
+		.doit = mtk_cfg80211_vendor_config_roaming,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -385,7 +393,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_ENABLE_ROAMING
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_enable_roaming
+		.doit = mtk_cfg80211_vendor_enable_roaming,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* GSCAN */
 #if CFG_SUPPORT_GSCN
@@ -395,7 +404,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_GET_CAPABILITIES
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_gscan_capabilities
+		.doit = mtk_cfg80211_vendor_get_gscan_capabilities,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -403,7 +413,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_SET_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_config
+		.doit = mtk_cfg80211_vendor_set_config,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -411,7 +422,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_SET_SCAN_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_scan_config
+		.doit = mtk_cfg80211_vendor_set_scan_config,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -419,7 +431,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_ENABLE_GSCAN
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_enable_scan
+		.doit = mtk_cfg80211_vendor_enable_scan,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -427,7 +440,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_ENABLE_FULL_SCAN_RESULTS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_enable_full_scan_results
+		.doit = mtk_cfg80211_vendor_enable_full_scan_results,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -435,7 +449,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_GET_SCAN_RESULTS
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_gscan_result
+		.doit = mtk_cfg80211_vendor_get_gscan_result,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -443,7 +458,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_SET_SIGNIFICANT_CHANGE_CONFIG
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_significant_change
+		.doit = mtk_cfg80211_vendor_set_significant_change,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -451,7 +467,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = GSCAN_SUBCMD_SET_HOTLIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_hotlist
+		.doit = mtk_cfg80211_vendor_set_hotlist,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 #endif
 	/* RTT */
@@ -461,7 +478,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = RTT_SUBCMD_GETCAPABILITY
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_rtt_capabilities
+		.doit = mtk_cfg80211_vendor_get_rtt_capabilities,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* Link Layer Statistics */
 	{
@@ -470,7 +488,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = LSTATS_SUBCMD_GET_INFO
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_llstats_get_info
+		.doit = mtk_cfg80211_vendor_llstats_get_info,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* RSSI Monitoring */
 	{
@@ -479,7 +498,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_SET_RSSI_MONITOR
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_rssi_monitoring
+		.doit = mtk_cfg80211_vendor_set_rssi_monitoring,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* Packet Keep Alive */
 	{
@@ -488,7 +508,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_OFFLOAD_START_MKEEP_ALIVE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_packet_keep_alive_start
+		.doit = mtk_cfg80211_vendor_packet_keep_alive_start,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -496,7 +517,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = WIFI_OFFLOAD_STOP_MKEEP_ALIVE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_packet_keep_alive_stop
+		.doit = mtk_cfg80211_vendor_packet_keep_alive_stop,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -505,7 +527,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV
 			| WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_scan_mac_oui
+		.doit = mtk_cfg80211_vendor_set_scan_mac_oui,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -513,7 +536,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 			.subcmd = QCA_NL80211_VENDOR_SUBCMD_ROAMING
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_roaming_policy
+		.doit = mtk_cfg80211_vendor_set_roaming_policy,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* Get Supported Feature Set */
 	{
@@ -523,7 +547,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 				WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_supported_feature_set
+		.doit = mtk_cfg80211_vendor_get_supported_feature_set,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* Get Driver Version or Firmware Version */
 	{
@@ -533,7 +558,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 				WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_version
+		.doit = mtk_cfg80211_vendor_get_version,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	/* Set Tx Power Scenario */
 	{
@@ -543,7 +569,8 @@ static const struct wiphy_vendor_command mtk_wlan_vendor_ops[] = {
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV |
 				WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_tx_power_scenario
+		.doit = mtk_cfg80211_vendor_set_tx_power_scenario,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 };
 
@@ -1119,8 +1146,7 @@ void updateWifiOnTimeStatistics(void)
 	kalHaltUnlock();
 }
 
-UINT_16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb,
-			void *accel_priv, select_queue_fallback_t fallback)
+u16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb, struct net_device *sb_dev)
 {
 	UINT_16 au16Wlan1dToQueueIdx[8] = { 1, 0, 0, 1, 2, 2, 3, 3 };
 
@@ -1156,7 +1182,7 @@ static int wlanSetMacAddress(struct net_device *ndev, void *addr)
 	if (!ndev || !addr) {
 		DBGLOG(INIT, ERROR, "Set macaddr with ndev(%d) and addr(%d)\n",
 		       (ndev == NULL) ? 0 : 1, (addr == NULL) ? 0 : 1);
-		return WLAN_STATUS_INVALID_DATA;
+		return -EINVAL;
 	}
 
 	/**********************************************************************
@@ -1164,11 +1190,11 @@ static int wlanSetMacAddress(struct net_device *ndev, void *addr)
 	 **********************************************************************
 	 */
 	wdev = ndev->ieee80211_ptr;
-	if (wdev->ssid_len > 0 || (wdev->current_bss)) {
+	if (wdev->u.client.ssid_len > 0 || wdev->connected) {
 		DBGLOG(INIT, ERROR,
 		       "Reject mac addr change due to ssid_len(%d) & bss(%d)\n",
-		       wdev->ssid_len, wdev->current_bss);
-		return WLAN_STATUS_NOT_ACCEPTED;
+		       wdev->u.client.ssid_len, wdev->connected);
+		return -EBUSY;
 	}
 
 	/**********************************************************************
@@ -1179,15 +1205,18 @@ static int wlanSetMacAddress(struct net_device *ndev, void *addr)
 	 **********************************************************************
 	 */
 	sa = (struct sockaddr *)addr;
+	if (!is_valid_ether_addr(sa->sa_data))
+		return -EADDRNOTAVAIL;
+
 	prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(ndev));
 	prAdapter = prGlueInfo->prAdapter;
 
 	COPY_MAC_ADDR(prAdapter->prAisBssInfo->aucOwnMacAddr, sa->sa_data);
-	COPY_MAC_ADDR(prGlueInfo->prDevHandler->dev_addr, sa->sa_data);
+	eth_hw_addr_set(prGlueInfo->prDevHandler, sa->sa_data);
 	DBGLOG(INIT, INFO, "Set connect random mac addr to " MACSTR ".\n",
 	       MAC2STR(prAdapter->prAisBssInfo->aucOwnMacAddr));
 
-	return WLAN_STATUS_SUCCESS;
+	return 0;
 }				/* end of wlanSetMacAddr() */
 
 /*----------------------------------------------------------------------------*/
@@ -1447,6 +1476,30 @@ int wlanDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd)
 
 /*----------------------------------------------------------------------------*/
 /*!
+* \brief A method of struct net_device, for the private ioctls SIOCDEVPRIVATE
+*        to SIOCDEVPRIVATE + 15. These are all that the kernel still passes to
+*        a network device: the wireless extensions' ioctls, private ones
+*        included, only go to the handlers in net_device::wireless_handlers,
+*        so wlanDoIOCTL() no longer sees them.
+*
+* \param[in] prDev      Linux kernel netdevice
+* \param[in] prIfReq    Our private ioctl request structure
+* \param[in] prData     The request's ifr_data, also right for a compat task
+* \param[in] i4Cmd      Command ID
+*
+* \retval 0  The IOCTL command is executed successfully.
+* \retval <0 The execution of IOCTL command is failed.
+*/
+/*----------------------------------------------------------------------------*/
+static int wlanSiocDevPrivate(struct net_device *prDev, struct ifreq *prIfReq, void __user *prData, int i4Cmd)
+{
+	prIfReq->ifr_data = prData;
+
+	return wlanDoIOCTL(prDev, prIfReq, i4Cmd);
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
 * \brief Export wlan GLUE_INFO_T pointer to p2p module
 *
 * \param[in]  prGlueInfo Pointer to struct GLUE_INFO_T
@@ -1617,7 +1670,7 @@ VOID wlanSchedScanStoppedWorkQueue(struct work_struct *work)
 * \retval NETDEV_TX_BUSY - on failure, packet will be discarded by upper layer.
 */
 /*----------------------------------------------------------------------------*/
-int wlanHardStartXmit(struct sk_buff *prSkb, struct net_device *prDev)
+netdev_tx_t wlanHardStartXmit(struct sk_buff *prSkb, struct net_device *prDev)
 {
 	P_NETDEV_PRIVATE_GLUE_INFO prNetDevPrivate = (P_NETDEV_PRIVATE_GLUE_INFO) NULL;
 	P_GLUE_INFO_T prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(prDev));
@@ -2118,6 +2171,17 @@ static VOID wlanNetUnregister(struct wireless_dev *prWdev)
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(prWdev->wiphy);
 
+	/*
+	 * Who switches WIFI off need not have disconnected first. cfg80211
+	 * cannot have that done any more, the adapter is halted by now, and it
+	 * warns about a station interface that goes while it is connected: it
+	 * is told that the connection is gone, as it is.
+	 */
+	if (prGlueInfo->eParamMediaStateIndicated != PARAM_MEDIA_STATE_DISCONNECTED) {
+		cfg80211_disconnected(prWdev->netdev, 0, NULL, 0, true, GFP_KERNEL);
+		prGlueInfo->eParamMediaStateIndicated = PARAM_MEDIA_STATE_DISCONNECTED;
+	}
+
 	wlanClearDevIdx(prWdev->netdev);
 	unregister_netdev(prWdev->netdev);
 
@@ -2138,7 +2202,7 @@ static const struct net_device_ops wlan_netdev_ops = {
 	.ndo_stop = wlanStop,
 	.ndo_set_rx_mode = wlanSetMulticastList,
 	.ndo_get_stats = wlanGetStats,
-	.ndo_do_ioctl = wlanDoIOCTL,
+	.ndo_siocdevprivate = wlanSiocDevPrivate,
 	.ndo_start_xmit = wlanHardStartXmit,
 	.ndo_init = wlanInit,
 	.ndo_uninit = wlanUninit,
@@ -2146,7 +2210,7 @@ static const struct net_device_ops wlan_netdev_ops = {
 	.ndo_set_mac_address = wlanSetMacAddress,
 };
 
-static UINT_8 wlanNvramBufHandler(PVOID ctx, const CHAR *buf, UINT_16 length)
+static uint8_t wlanNvramBufHandler(void *ctx, const char __user *buf, uint16_t length)
 {
 	DBGLOG(INIT, INFO, "buf = %p, length = %u\n", buf, length);
 	if (buf == NULL || length <= 0 || length != sizeof(g_aucNvram))
@@ -2722,7 +2786,7 @@ VOID nicConfigProcSetCamCfgWrite(BOOLEAN enabled)
 	nicConfigPowerSaveProfile(prAdapter, rPowerSaveMode.ucBssIndex, ePowerMode, FALSE);
 }
 
-int set_p2p_mode_handler(struct net_device *netdev, PARAM_CUSTOM_P2P_SET_STRUCT_T p2pmode)
+int32_t set_p2p_mode_handler(struct net_device *netdev, struct PARAM_CUSTOM_P2P_SET_STRUCT p2pmode)
 {
 	P_GLUE_INFO_T prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(netdev));
 	PARAM_CUSTOM_P2P_SET_STRUCT_T rSetP2P;
@@ -2910,14 +2974,14 @@ static void wlanCopyIdmeWifiMfg(P_REG_INFO_T prRegInfo)
 static void idme_get_mac_addr(P_REG_INFO_T prRegInfo)
 {
 	struct device_node *ap;
-	int len, i, ret;
+	int len = 0, i, ret;
 	char buf[3] = {0};
 
 	ap = of_find_node_by_path(IDME_OF_MAC_ADDR);
 	if (likely(ap)) {
 		const char *mac_addr = of_get_property(ap, "value", &len);
 
-		if (likely(len >= 12)) {
+		if (likely(mac_addr && len >= 12)) {
 			for (i = 0; i < 12; i += 2) {
 				buf[0] = mac_addr[i];
 				buf[1] = mac_addr[i + 1];
@@ -2932,7 +2996,7 @@ static void idme_get_mac_addr(P_REG_INFO_T prRegInfo)
 static int idme_get_wifi_mfg(P_REG_INFO_T prRegInfo)
 {
 	struct device_node *ap;
-	int i, len;
+	int i, len = 0;
 	int ret = 0;
 	char buf[3] = {0};
 	PUINT_8 p;
@@ -2941,7 +3005,7 @@ static int idme_get_wifi_mfg(P_REG_INFO_T prRegInfo)
 	if (likely(ap)) {
 		const char *wifi_mfg = of_get_property(ap, "value", &len);
 
-		if (likely(len >= 1024)) {
+		if (likely(wifi_mfg && len >= 1024)) {
 			p = (PUINT_8) &idme_wifi_mfg;
 			for (i = 0; i < 1024; i += 2) {
 				buf[0] = wifi_mfg[i];
@@ -2965,7 +3029,7 @@ static int idme_get_wifi_mfg(P_REG_INFO_T prRegInfo)
 static void idme_get_board_id(P_GLUE_INFO_T prGlueInfo)
 {
 	struct device_node *ap;
-	int len;
+	int len = 0;
 
 	ap = of_find_node_by_path(IDME_OF_BOARD_ID);
 	if (likely(ap)) {
@@ -2979,6 +3043,41 @@ static void idme_get_board_id(P_GLUE_INFO_T prGlueInfo)
 #endif
 		}
 	}
+}
+
+/*
+ * The board type is the number that the board ID starts with, four hex
+ * digits: 005E for trona. Amazon's kernel has this helper in its own IDME
+ * driver, drivers/misc/idme.c. It returns 0, no board, when the bootloader
+ * left no (usable) board ID in the device tree.
+ */
+static unsigned int idme_get_board_type(void)
+{
+	struct device_node *ap;
+	const char *board_id;
+	char board_type[5] = { 0 };
+	unsigned int rs = 0;
+	int len = 0;
+
+	ap = of_find_node_by_path(IDME_OF_BOARD_ID);
+	if (!ap) {
+		DBGLOG(INIT, WARN, "no idme board_id\n");
+		return 0;
+	}
+
+	board_id = of_get_property(ap, "value", &len);
+	if (!board_id || len < sizeof(board_type) - 1) {
+		DBGLOG(INIT, WARN, "idme board_id len err=%d\n", len);
+	} else {
+		memcpy(board_type, board_id, sizeof(board_type) - 1);
+		if (kstrtouint(board_type, 16, &rs)) {
+			DBGLOG(INIT, WARN, "idme board_id is not a number\n");
+			rs = 0;
+		}
+	}
+	of_node_put(ap);
+
+	return rs;
 }
 #endif
 
@@ -3337,16 +3436,18 @@ static INT_32 wlanProbe(PVOID pvData)
 
 		/* TODO the change schedule API shall be provided by OS glue layer */
 		/* Switch the Wi-Fi task priority to higher priority and change the scheduling method */
-		if (prGlueInfo->prAdapter->rWifiVar.ucThreadPriority > 0) {
-			struct sched_param param = {.sched_priority = prGlueInfo->prAdapter->rWifiVar.ucThreadPriority
-			};
-			sched_setscheduler(prGlueInfo->main_thread,
-					   prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling, &param);
+		/*
+		 * Modules can ask for a realtime thread, but they do not get to
+		 * choose its priority any more: the ThreadPriority setting only
+		 * says whether to ask, ThreadSched takes FIFO and RR for the same.
+		 */
+		if (prGlueInfo->prAdapter->rWifiVar.ucThreadPriority > 0 &&
+		    (prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling == SCHED_FIFO ||
+		     prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling == SCHED_RR)) {
+			sched_set_fifo(prGlueInfo->main_thread);
 #if CFG_SUPPORT_MULTITHREAD
-			sched_setscheduler(prGlueInfo->hif_thread,
-					   prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling, &param);
-			sched_setscheduler(prGlueInfo->rx_thread,
-					   prGlueInfo->prAdapter->rWifiVar.ucThreadScheduling, &param);
+			sched_set_fifo(prGlueInfo->hif_thread);
+			sched_set_fifo(prGlueInfo->rx_thread);
 #endif
 			DBGLOG(INIT, INFO,
 			       "Set pri = %d, sched = %d\n",
@@ -3374,7 +3475,7 @@ static INT_32 wlanProbe(PVOID pvData)
 				DBGLOG(INIT, WARN, "set MAC addr fail 0x%x\n", rStatus);
 				prGlueInfo->u4ReadyFlag = 0;
 			} else {
-				ether_addr_copy(prGlueInfo->prDevHandler->dev_addr, MacAddr.sa_data);
+				eth_hw_addr_set(prGlueInfo->prDevHandler, MacAddr.sa_data);
 				ether_addr_copy(prGlueInfo->prDevHandler->perm_addr,
 				       prGlueInfo->prDevHandler->dev_addr);
 
@@ -3869,20 +3970,36 @@ static int initWlan(void)
 	if (gprWdev)
 		prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(gprWdev->wiphy);
 
-	if (!prGlueInfo)
+	if (!prGlueInfo) {
+		/* nothing of this module may stay registered when it goes */
+		kalUninitIOBuffer();
+		procUninitProcFs();
 		return -1;
+	}
 
 	glP2pCreateWirelessDevice(prGlueInfo);
+
+	/*
+	 * Before the bus is registered: from then on the WIFI function may be
+	 * switched on at any time, see HifAhbAutostart(), and wlanProbe() may
+	 * want a reset when it fails.
+	 */
+#if (CFG_CHIP_RESET_SUPPORT)
+	glResetInit();
+#endif
 
 	ret = ((glRegisterBus(wlanProbe, wlanRemove) == WLAN_STATUS_SUCCESS) ? 0 : -EIO);
 
 	if (ret == -EIO) {
+#if (CFG_CHIP_RESET_SUPPORT)
+		glResetUninit();
+#endif
 		kalUninitIOBuffer();
+		destroyWirelessDevice();
+		glP2pDestroyWirelessDevice();
+		procUninitProcFs();
 		return ret;
 	}
-#if (CFG_CHIP_RESET_SUPPORT)
-	glResetInit();
-#endif
 
 	kalFbNotifierReg(prGlueInfo);
 #if defined(MT6631)
@@ -3946,5 +4063,4 @@ module_exit(exitWlan);
 
 MODULE_AUTHOR(NIC_AUTHOR);
 MODULE_DESCRIPTION(NIC_DESC);
-MODULE_SUPPORTED_DEVICE(NIC_NAME);
 MODULE_LICENSE("GPL");

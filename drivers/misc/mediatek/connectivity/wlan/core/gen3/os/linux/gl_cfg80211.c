@@ -133,6 +133,9 @@ mtk_cfg80211_change_iface(struct wiphy *wiphy,
 	prGlueInfo->rWpaInfo.u4Mfp = IW_AUTH_MFP_DISABLED;
 #endif
 
+	/* cfg80211 has the driver keep the interface type up to date */
+	ndev->ieee80211_ptr->iftype = type;
+
 	return 0;
 }
 
@@ -148,8 +151,8 @@ mtk_cfg80211_change_iface(struct wiphy *wiphy,
 /*----------------------------------------------------------------------------*/
 int
 mtk_cfg80211_add_key(struct wiphy *wiphy,
-		     struct net_device *ndev,
-		     u8 key_index, bool pairwise, const u8 *mac_addr, struct key_params *params)
+		     struct wireless_dev *wdev, int link_id,
+		     u8 key_index, enum nl80211_key_type type, const u8 *mac_addr, struct key_params *params)
 {
 	PARAM_KEY_T rKey;
 	P_GLUE_INFO_T prGlueInfo = NULL;
@@ -157,6 +160,7 @@ mtk_cfg80211_add_key(struct wiphy *wiphy,
 	INT_32 i4Rslt = -EINVAL;
 	UINT_32 u4BufLen = 0;
 	UINT_8 tmp1[8], tmp2[8];
+	bool pairwise = (type == NL80211_KEYTYPE_PAIRWISE);
 
 	const UINT_8 aucBCAddr[] = BC_MAC_ADDR;
 	const UINT_8 aucZeroMacAddr[] = NULL_MAC_ADDR;
@@ -235,9 +239,9 @@ mtk_cfg80211_add_key(struct wiphy *wiphy,
 /*----------------------------------------------------------------------------*/
 int
 mtk_cfg80211_get_key(struct wiphy *wiphy,
-		     struct net_device *ndev,
+		     struct wireless_dev *wdev, int link_id,
 		     u8 key_index,
-		     bool pairwise,
+		     enum nl80211_key_type type,
 		     const u8 *mac_addr, void *cookie, void (*callback) (void *cookie, struct key_params *))
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
@@ -264,13 +268,16 @@ mtk_cfg80211_get_key(struct wiphy *wiphy,
  *         others:  failure
  */
 /*----------------------------------------------------------------------------*/
-int mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_index, bool pairwise, const u8 *mac_addr)
+int
+mtk_cfg80211_del_key(struct wiphy *wiphy, struct wireless_dev *wdev, int link_id,
+		     u8 key_index, enum nl80211_key_type type, const u8 *mac_addr)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
 	WLAN_STATUS rStatus = WLAN_STATUS_SUCCESS;
 	PARAM_REMOVE_KEY_T rRemoveKey;
 	UINT_32 u4BufLen = 0;
 	INT_32 i4Rslt = -EINVAL;
+	bool pairwise = (type == NL80211_KEYTYPE_PAIRWISE);
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 	ASSERT(prGlueInfo);
@@ -314,7 +321,8 @@ int mtk_cfg80211_del_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_in
  */
 /*----------------------------------------------------------------------------*/
 int
-mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, u8 key_index, bool unicast, bool multicast)
+mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, int link_id,
+			     u8 key_index, bool unicast, bool multicast)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
 	PARAM_DEFAULT_KEY_T rDefaultKey;
@@ -363,7 +371,8 @@ mtk_cfg80211_set_default_key(struct wiphy *wiphy, struct net_device *ndev, u8 ke
  *         others:  failure
  */
 /*----------------------------------------------------------------------------*/
-int mtk_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev, const u8 *mac, struct station_info *sinfo)
+int
+mtk_cfg80211_get_station(struct wiphy *wiphy, struct wireless_dev *wdev, const u8 *mac, struct station_info *sinfo)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
 	WLAN_STATUS rStatus;
@@ -373,6 +382,7 @@ int mtk_cfg80211_get_station(struct wiphy *wiphy, struct net_device *ndev, const
 	PARAM_GET_STA_STA_STATISTICS rQueryStaStatistics;
 	UINT_32 u4TotalError;
 	struct net_device_stats *prDevStats;
+	struct net_device *ndev = wdev->netdev;
 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 	ASSERT(prGlueInfo);
@@ -863,7 +873,7 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 	WLAN_STATUS rStatus;
 	UINT_32 u4BufLen;
 	ENUM_PARAM_ENCRYPTION_STATUS_T eEncStatus;
-	ENUM_PARAM_AUTH_MODE_T eAuthMode;
+	ENUM_PARAM_AUTH_MODE_T eAuthMode = AUTH_MODE_OPEN;
 	UINT_32 cipher;
 	PARAM_CONNECT_T rNewSsid;
 	BOOLEAN fgCarryWPSIE = FALSE;
@@ -891,7 +901,7 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 	 * Beacaus driver disconnected is done, but cfg80211 is disconnecting.
 	 * Reject this request.Supplicant will issue the connecting request again.
 	 */
-	if (wdev->current_bss &&
+	if (wdev->connected &&
 		kalGetMediaStateIndicated(prGlueInfo) == PARAM_MEDIA_STATE_DISCONNECTED) {
 		DBGLOG(REQ, WARN, "Reject this connecting request\n");
 		return -EALREADY;
@@ -1245,8 +1255,15 @@ int mtk_cfg80211_connect(struct wiphy *wiphy, struct net_device *ndev, struct cf
 		}
 	}
 
-	rNewSsid.u4CenterFreq = sme->channel_hint ? sme->channel_hint->center_freq : 0;
-	rNewSsid.pucBssid = (UINT_8 *)sme->bssid_hint;
+	/*
+	 * A BSSID or channel that user space insists on comes without "hint";
+	 * wlanoidSetConnect() connects to the BSSID it is given either way.
+	 */
+	if (sme->channel)
+		rNewSsid.u4CenterFreq = sme->channel->center_freq;
+	else
+		rNewSsid.u4CenterFreq = sme->channel_hint ? sme->channel_hint->center_freq : 0;
+	rNewSsid.pucBssid = (UINT_8 *)(sme->bssid ? sme->bssid : sme->bssid_hint);
 	rNewSsid.pucSsid = (UINT_8 *)sme->ssid;
 	rNewSsid.u4SsidLen = sme->ssid_len;
 	rStatus = kalIoctl(prGlueInfo, wlanoidSetConnect, (PVOID)&rNewSsid, sizeof(PARAM_CONNECT_T),
@@ -1466,6 +1483,10 @@ int mtk_cfg80211_set_pmksa(struct wiphy *wiphy, struct net_device *ndev, struct 
 	prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 	ASSERT(prGlueInfo);
 
+	/* PMKSAs by SSID and cache ID (FILS) are not for this driver */
+	if (!pmksa->bssid || !pmksa->pmkid)
+		return -EOPNOTSUPP;
+
 	prPmkid = (P_PARAM_PMKID_T) kalMemAlloc(8 + sizeof(PARAM_BSSID_INFO_T), VIR_MEM_TYPE);
 	if (!prPmkid) {
 		DBGLOG(INIT, INFO, "Can not alloc memory for IW_PMKSA_ADD\n");
@@ -1630,44 +1651,52 @@ int mtk_cfg80211_set_rekey_data(struct wiphy *wiphy, struct net_device *dev, str
 
 }
 
-void mtk_cfg80211_mgmt_frame_register(IN struct wiphy *wiphy,
-				      IN struct wireless_dev *wdev,
-				      IN u16 frame_type, IN bool reg)
+/*----------------------------------------------------------------------------*/
+/*!
+ * @brief This routine is told which management frames are wanted on an
+ *        interface when that changes, the whole set every time. Of these the
+ *        driver can turn probe requests and action frames on and off.
+ *
+ * @param upd: the frame subtypes that are registered for now
+ *
+ * @retval none
+ */
+/*----------------------------------------------------------------------------*/
+void mtk_cfg80211_update_mgmt_frame_registrations(IN struct wiphy *wiphy,
+						  IN struct wireless_dev *wdev,
+						  IN struct mgmt_frame_regs *upd)
 {
-#if 0
-	P_MSG_P2P_MGMT_FRAME_REGISTER_T prMgmtFrameRegister = (P_MSG_P2P_MGMT_FRAME_REGISTER_T) NULL;
-#endif
 	P_GLUE_INFO_T prGlueInfo = (P_GLUE_INFO_T) NULL;
+	UINT_32 u4NewFilter;
 
 	do {
 
-		DBGLOG(INIT, TRACE, "mtk_cfg80211_mgmt_frame_register\n");
+		DBGLOG(INIT, TRACE, "mtk_cfg80211_update_mgmt_frame_registrations\n");
 
 		prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 
-		switch (frame_type) {
-		case MAC_FRAME_PROBE_REQ:
-			if (reg) {
-				prGlueInfo->u4OsMgmtFrameFilter |= PARAM_PACKET_FILTER_PROBE_REQ;
-				DBGLOG(INIT, TRACE, "Open packet filer probe request\n");
-			} else {
-				prGlueInfo->u4OsMgmtFrameFilter &= ~PARAM_PACKET_FILTER_PROBE_REQ;
-				DBGLOG(INIT, TRACE, "Close packet filer probe request\n");
-			}
-			break;
-		case MAC_FRAME_ACTION:
-			if (reg) {
-				prGlueInfo->u4OsMgmtFrameFilter |= PARAM_PACKET_FILTER_ACTION_FRAME;
-				DBGLOG(INIT, TRACE, "Open packet filer action frame.\n");
-			} else {
-				prGlueInfo->u4OsMgmtFrameFilter &= ~PARAM_PACKET_FILTER_ACTION_FRAME;
-				DBGLOG(INIT, TRACE, "Close packet filer action frame.\n");
-			}
-			break;
-		default:
-			DBGLOG(INIT, TRACE, "Ask frog to add code for mgmt:%x\n", frame_type);
-			break;
+		u4NewFilter = prGlueInfo->u4OsMgmtFrameFilter &
+			      ~(PARAM_PACKET_FILTER_PROBE_REQ | PARAM_PACKET_FILTER_ACTION_FRAME);
+
+		if (upd->interface_stypes & BIT(MAC_FRAME_PROBE_REQ >> 4)) {
+			u4NewFilter |= PARAM_PACKET_FILTER_PROBE_REQ;
+			DBGLOG(INIT, TRACE, "Open packet filer probe request\n");
+		} else {
+			DBGLOG(INIT, TRACE, "Close packet filer probe request\n");
 		}
+
+		if (upd->interface_stypes & BIT(MAC_FRAME_ACTION >> 4)) {
+			u4NewFilter |= PARAM_PACKET_FILTER_ACTION_FRAME;
+			DBGLOG(INIT, TRACE, "Open packet filer action frame.\n");
+		} else {
+			DBGLOG(INIT, TRACE, "Close packet filer action frame.\n");
+		}
+
+		/* nothing to tell the firmware when these two are as before */
+		if (u4NewFilter == prGlueInfo->u4OsMgmtFrameFilter)
+			break;
+
+		prGlueInfo->u4OsMgmtFrameFilter = u4NewFilter;
 
 		if (prGlueInfo->prAdapter != NULL) {
 
@@ -1679,29 +1708,10 @@ void mtk_cfg80211_mgmt_frame_register(IN struct wiphy *wiphy,
 			if (in_interrupt())
 				DBGLOG(INIT, TRACE, "It is in interrupt level\n");
 		}
-#if 0
-
-		prMgmtFrameRegister =
-		    (P_MSG_P2P_MGMT_FRAME_REGISTER_T) cnmMemAlloc(prGlueInfo->prAdapter,
-								  RAM_TYPE_MSG, sizeof(MSG_P2P_MGMT_FRAME_REGISTER_T));
-
-		if (prMgmtFrameRegister == NULL) {
-			ASSERT(FALSE);
-			break;
-		}
-
-		prMgmtFrameRegister->rMsgHdr.eMsgId = MID_MNY_P2P_MGMT_FRAME_REGISTER;
-
-		prMgmtFrameRegister->u2FrameType = frame_type;
-		prMgmtFrameRegister->fgIsRegister = reg;
-
-		mboxSendMsg(prGlueInfo->prAdapter, MBOX_ID_0, (P_MSG_HDR_T) prMgmtFrameRegister, MSG_SEND_METHOD_BUF);
-
-#endif
 
 	} while (FALSE);
 
-}				/* mtk_cfg80211_mgmt_frame_register */
+}				/* mtk_cfg80211_update_mgmt_frame_registrations */
 
 /*----------------------------------------------------------------------------*/
 /*!
@@ -1717,7 +1727,7 @@ void mtk_cfg80211_mgmt_frame_register(IN struct wiphy *wiphy,
 int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 				   struct wireless_dev *wdev,
 				   struct ieee80211_channel *chan,
-				   unsigned int duration, u64 *cookie)
+				   unsigned int duration, u64 cookie, const u8 *rx_addr)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
 	INT_32 i4Rslt = -EINVAL;
@@ -1726,8 +1736,7 @@ int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 	do {
 		if ((wiphy == NULL)
 		    || (wdev == NULL)
-		    || (chan == NULL)
-		    || (cookie == NULL)) {
+		    || (chan == NULL)) {
 			break;
 		}
 
@@ -1738,7 +1747,7 @@ int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 		DBGLOG(INIT, INFO, "--> %s()\n", __func__);
 #endif
 
-		*cookie = prGlueInfo->u8Cookie++;
+		/* cfg80211 hands the cookie out, and will ask for it back */
 
 		prMsgChnlReq = cnmMemAlloc(prGlueInfo->prAdapter, RAM_TYPE_MSG, sizeof(MSG_REMAIN_ON_CHANNEL_T));
 
@@ -1749,7 +1758,7 @@ int mtk_cfg80211_remain_on_channel(struct wiphy *wiphy,
 		}
 
 		prMsgChnlReq->rMsgHdr.eMsgId = MID_MNY_AIS_REMAIN_ON_CHANNEL;
-		prMsgChnlReq->u8Cookie = *cookie;
+		prMsgChnlReq->u8Cookie = cookie;
 		prMsgChnlReq->u4DurationMs = duration;
 
 		prMsgChnlReq->ucChannelNum = nicFreq2ChannelNum(chan->center_freq * 1000);
@@ -1838,7 +1847,7 @@ int mtk_cfg80211_cancel_remain_on_channel(struct wiphy *wiphy,
 int mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			struct wireless_dev *wdev,
 			struct cfg80211_mgmt_tx_params *params,
-			u64 *cookie)
+			u64 cookie)
 {
 	P_GLUE_INFO_T prGlueInfo = NULL;
 	INT_32 i4Rslt = -EINVAL;
@@ -1847,13 +1856,13 @@ int mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 	PUINT_8 pucFrameBuf = (PUINT_8) NULL;
 
 	do {
-		if ((wiphy == NULL) || (wdev == NULL) || (params == 0) || (cookie == NULL))
+		if ((wiphy == NULL) || (wdev == NULL) || (params == 0))
 			break;
 
 		prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);
 		ASSERT(prGlueInfo);
 
-		*cookie = prGlueInfo->u8Cookie++;
+		/* cfg80211 hands the cookie out, the TX status is to carry it */
 
 		DBGLOG(REQ, INFO, "%s\n", __func__);
 
@@ -1877,7 +1886,7 @@ int mtk_cfg80211_mgmt_tx(struct wiphy *wiphy,
 			break;
 		}
 
-		prMsgTxReq->u8Cookie = *cookie;
+		prMsgTxReq->u8Cookie = cookie;
 		prMsgTxReq->rMsgHdr.eMsgId = MID_MNY_AIS_MGMT_TX;
 
 		pucFrameBuf = (PUINT_8) ((ULONG) prMgmtFrame->prPacket + MAC_TX_RESERVED_FIELD);
@@ -2764,7 +2773,7 @@ int mtk_cfg80211_testmode_get_scan_done(IN struct wiphy *wiphy, IN void *data, I
  */
 /*----------------------------------------------------------------------------*/
 int
-mtk_cfg80211_change_station(struct wiphy *wiphy, struct net_device *ndev, const u8 *mac,
+mtk_cfg80211_change_station(struct wiphy *wiphy, struct wireless_dev *wdev, const u8 *mac,
 				struct station_parameters *params)
 {
 
@@ -2788,19 +2797,19 @@ mtk_cfg80211_change_station(struct wiphy *wiphy, struct net_device *ndev, const 
 
 	if (params == NULL)
 		return 0;
-	else if (params->supported_rates == NULL)
+	else if (params->link_sta_params.supported_rates == NULL)
 		return 0;
 
 	/* init */
 	kalMemZero(&rCmdUpdate, sizeof(rCmdUpdate));
 	kalMemCopy(rCmdUpdate.aucPeerMac, mac, 6);
 
-	if (params->supported_rates != NULL) {
+	if (params->link_sta_params.supported_rates != NULL) {
 
-		u4Temp = params->supported_rates_len;
+		u4Temp = params->link_sta_params.supported_rates_len;
 		if (u4Temp > CMD_PEER_UPDATE_SUP_RATE_MAX)
 			u4Temp = CMD_PEER_UPDATE_SUP_RATE_MAX;
-		kalMemCopy(rCmdUpdate.aucSupRate, params->supported_rates, u4Temp);
+		kalMemCopy(rCmdUpdate.aucSupRate, params->link_sta_params.supported_rates, u4Temp);
 		rCmdUpdate.u2SupRateLen = u4Temp;
 	}
 
@@ -2822,23 +2831,23 @@ mtk_cfg80211_change_station(struct wiphy *wiphy, struct net_device *ndev, const 
 		rCmdUpdate.u2ExtCapLen = u4Temp;
 	}
 
-	if (params->ht_capa != NULL) {
+	if (params->link_sta_params.ht_capa != NULL) {
 
-		rCmdUpdate.rHtCap.u2CapInfo = params->ht_capa->cap_info;
-		rCmdUpdate.rHtCap.ucAmpduParamsInfo = params->ht_capa->ampdu_params_info;
-		rCmdUpdate.rHtCap.u2ExtHtCapInfo = params->ht_capa->extended_ht_cap_info;
-		rCmdUpdate.rHtCap.u4TxBfCapInfo = params->ht_capa->tx_BF_cap_info;
-		rCmdUpdate.rHtCap.ucAntennaSelInfo = params->ht_capa->antenna_selection_info;
+		rCmdUpdate.rHtCap.u2CapInfo = params->link_sta_params.ht_capa->cap_info;
+		rCmdUpdate.rHtCap.ucAmpduParamsInfo = params->link_sta_params.ht_capa->ampdu_params_info;
+		rCmdUpdate.rHtCap.u2ExtHtCapInfo = params->link_sta_params.ht_capa->extended_ht_cap_info;
+		rCmdUpdate.rHtCap.u4TxBfCapInfo = params->link_sta_params.ht_capa->tx_BF_cap_info;
+		rCmdUpdate.rHtCap.ucAntennaSelInfo = params->link_sta_params.ht_capa->antenna_selection_info;
 		kalMemCopy(rCmdUpdate.rHtCap.rMCS.arRxMask,
-			   params->ht_capa->mcs.rx_mask, sizeof(rCmdUpdate.rHtCap.rMCS.arRxMask));
+			   params->link_sta_params.ht_capa->mcs.rx_mask, sizeof(rCmdUpdate.rHtCap.rMCS.arRxMask));
 
-		rCmdUpdate.rHtCap.rMCS.u2RxHighest = params->ht_capa->mcs.rx_highest;
-		rCmdUpdate.rHtCap.rMCS.ucTxParams = params->ht_capa->mcs.tx_params;
+		rCmdUpdate.rHtCap.rMCS.u2RxHighest = params->link_sta_params.ht_capa->mcs.rx_highest;
+		rCmdUpdate.rHtCap.rMCS.ucTxParams = params->link_sta_params.ht_capa->mcs.tx_params;
 		rCmdUpdate.fgIsSupHt = TRUE;
 	}
 	/* vht */
 
-	if (params->vht_capa != NULL) {
+	if (params->link_sta_params.vht_capa != NULL) {
 		/* rCmdUpdate.rVHtCap */
 		/* rCmdUpdate.rVHtCap */
 	}
@@ -2877,7 +2886,7 @@ mtk_cfg80211_change_station(struct wiphy *wiphy, struct net_device *ndev, const 
  *         others:  failure
  */
 /*----------------------------------------------------------------------------*/
-int mtk_cfg80211_add_station(struct wiphy *wiphy, struct net_device *ndev,
+int mtk_cfg80211_add_station(struct wiphy *wiphy, struct wireless_dev *wdev,
 				const u8 *mac, struct station_parameters *params)
 {
 	/* return 0; */
@@ -2927,11 +2936,7 @@ int mtk_cfg80211_add_station(struct wiphy *wiphy, struct net_device *ndev,
  *		must implement if you have add_station().
  */
 /*----------------------------------------------------------------------------*/
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
-int mtk_cfg80211_del_station(struct wiphy *wiphy, struct net_device *ndev, struct station_del_parameters *params)
-#else
-int mtk_cfg80211_del_station(struct wiphy *wiphy, struct net_device *ndev, const u8 *mac)
-#endif
+int mtk_cfg80211_del_station(struct wiphy *wiphy, struct wireless_dev *wdev, struct station_del_parameters *params)
 {
 /* fgIsTDLSlinkEnable = 0; */
 
@@ -2952,11 +2957,10 @@ int mtk_cfg80211_del_station(struct wiphy *wiphy, struct net_device *ndev, const
 	prAdapter = prGlueInfo->prAdapter;
 	/* For kernel 3.18 modification, we trasfer to local buff to query sta */
 	memset(deleteMac, 0, MAC_ADDR_LEN);
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(4, 4, 0))
+	/* cfg80211 has no MAC address when all stations are to go: nothing to do */
+	if (!params->mac)
+		return 0;
 	memcpy(&deleteMac, params->mac, MAC_ADDR_LEN);
-#else
-	memcpy(&deleteMac, mac, MAC_ADDR_LEN);
-#endif
 
 	prStaRec = cnmGetStaRecByAddress(prAdapter, (UINT_8) prAdapter->prAisBssInfo->ucBssIndex, deleteMac);
 
@@ -2981,7 +2985,7 @@ int mtk_cfg80211_del_station(struct wiphy *wiphy, struct net_device *ndev, const
 /*----------------------------------------------------------------------------*/
 int
 mtk_cfg80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev,
-		       const u8 *peer, u8 action_code, u8 dialog_token,
+		       const u8 *peer, int link_id, u8 action_code, u8 dialog_token,
 		       u16 status_code, u32 peer_capability,
 		       bool initiator, const u8 *buf, size_t len)
 {
@@ -2997,6 +3001,9 @@ mtk_cfg80211_tdls_mgmt(struct wiphy *wiphy, struct net_device *dev,
 	/* init */
 	prGlueInfo = (GLUE_INFO_T *) wiphy_priv(wiphy);
 	if (prGlueInfo == NULL)
+		return -EINVAL;
+
+	if (len > sizeof(rCmdMgt.aucSecBuf))
 		return -EINVAL;
 
 	kalMemZero(&rCmdMgt, sizeof(rCmdMgt));
@@ -3169,7 +3176,7 @@ INT_32 mtk_cfg80211_process_str_cmd(struct wiphy *wiphy, struct wireless_dev *wd
 	struct NL80211_DRIVER_STRING_CMD_PARAMS *param =
 		(struct NL80211_DRIVER_STRING_CMD_PARAMS *) data;
 	uint8_t *cmd = (uint8_t *) (param + 1);
-	struct GLUE_INFO *prGlueInfo = (struct GLUE_INFO *)wiphy_priv(wiphy);
+	P_GLUE_INFO_T prGlueInfo = (P_GLUE_INFO_T)wiphy_priv(wiphy);
 
 	len -= sizeof(struct NL80211_DRIVER_STRING_CMD_PARAMS);
 	ucBssIndex = wlanGetBssIdx(wdev->netdev);

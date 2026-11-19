@@ -697,7 +697,12 @@ enum UT_TRIGGER_TX_HANGE_METRIC {
 
 /* string operation */
 #define kalStrCpy(dest, src)                         strcpy(dest, src)
-#define kalStrnCpy(dest, src, n)                      strncpy(dest, src, n)
+/*
+ * What strncpy(), which the kernel no longer has, did: at most n bytes, the
+ * rest filled with NUL and no terminator if src does not fit. The callers
+ * count on all of it.
+ */
+#define kalStrnCpy(dest, src, n)                      memcpy_and_pad(dest, n, src, strnlen(src, n), 0)
 #define kalStrCmp(ct, cs)                            strcmp(ct, cs)
 #define kalStrnCmp(ct, cs, n)                         strncmp(ct, cs, n)
 #define kalStrChr(s, c)                              strchr(s, c)
@@ -850,7 +855,7 @@ VOID kalPacketFree(IN P_GLUE_INFO_T prGlueInfo, IN PVOID pvPacket);
 
 PVOID kalPacketAlloc(IN P_GLUE_INFO_T prGlueInfo, IN UINT_32 u4Size, OUT PUINT_8 *ppucData);
 
-VOID kalOsTimerInitialize(IN P_GLUE_INFO_T prGlueInfo, IN PVOID prTimerHandler);
+VOID kalOsTimerInitialize(IN P_GLUE_INFO_T prGlueInfo, IN void (*prTimerHandler)(struct timer_list *));
 
 BOOL kalSetTimer(IN P_GLUE_INFO_T prGlueInfo, IN OS_SYSTIME rInterval);
 
@@ -1053,7 +1058,7 @@ VOID kalScanDone(IN P_GLUE_INFO_T prGlueInfo, IN ENUM_KAL_NETWORK_TYPE_INDEX_T e
 
 UINT_32 kalRandomNumber(VOID);
 
-VOID kalTimeoutHandler(unsigned long arg);
+VOID kalTimeoutHandler(struct timer_list *prTimer);
 
 VOID kalSetEvent(P_GLUE_INFO_T pr);
 

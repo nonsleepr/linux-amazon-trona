@@ -250,6 +250,12 @@ UINT_32 dumpCrBeforeReset(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 	       CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
 				0x330));
 
+	/* Both are optional mappings, see glSetHifInfo() */
+	if (!prGlueInfo->rHifInfo.InfraRegBaseAddr || !prGlueInfo->rHifInfo.ConnCfgRegBaseAddr) {
+		DBGLOG(INIT, ERROR, "No INFRASYS_AO or CONNSYS_CONFIG mapping.\n");
+		return 0;
+	}
+
 	DBGLOG(INIT, ERROR, "INFRASYS_AO_REG_BASE+0x0394 write 0x800c.\n");
 	if (u2ChipID == 0x6771) {
 		val = 0x800c;
@@ -1024,7 +1030,7 @@ wlanImageDividDownload(IN P_ADAPTER_T prAdapter, IN PVOID pvFwImageMapFile)
 	}
 
 	kalSetEmiMpuProtection(gConEmiPhyBase, WIFI_EMI_MEM_SIZE, FALSE);
-	prWifiEmiBaseAddr = ioremap_nocache(gConEmiPhyBase, WIFI_EMI_AVAILABLE_MEM_SIZE);
+	prWifiEmiBaseAddr = ioremap(gConEmiPhyBase, WIFI_EMI_AVAILABLE_MEM_SIZE);
 
 	/* IEMI + DEMI */
 	for (i = ENTRY_DIRECTLY_TO_CHIP; i < prFwHead->u4NumOfEntries; i++) {

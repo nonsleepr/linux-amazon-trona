@@ -32,7 +32,9 @@
 #include "fw_log_wifi.h"
 #include "wmt_exp.h"
 #include "stp_exp.h"
+#include "wmt_cdev_wifi.h"
 
+MODULE_DESCRIPTION("MediaTek WMT WiFi function control (/dev/wmtWifi)");
 MODULE_LICENSE("Dual BSD/GPL");
 
 #define WIFI_DRIVER_NAME "mtk_wmt_wifi_chrdev"
@@ -101,21 +103,10 @@ static char *ifname = WLAN_IFACE_NAME;
 
 /*******************************************************************
  */
-enum ENUM_RESET_STATUS {
-	RESET_FAIL,
-	RESET_SUCCESS
-};
-
 /*
- *  enable = 1, mode = 0  => init P2P network
- *  enable = 1, mode = 1  => init Soft AP network
- *  enable = 0  => uninit P2P/AP network
+ * enum ENUM_RESET_STATUS, struct PARAM_CUSTOM_P2P_SET_STRUCT and the types
+ * of the WLAN driver's handlers are in wmt_cdev_wifi.h
  */
-struct PARAM_CUSTOM_P2P_SET_STRUCT {
-	uint32_t u4Enable;
-	uint32_t u4Mode;
-};
-typedef int32_t(*set_p2p_mode) (struct net_device *netdev, struct PARAM_CUSTOM_P2P_SET_STRUCT p2pmode);
 
 static set_p2p_mode pf_set_p2p_mode;
 VOID register_set_p2p_mode_handler(set_p2p_mode handler)
@@ -132,7 +123,6 @@ enum ENUM_WLAN_DRV_BUF_TYPE_T {
 	BUF_TYPE_NUM
 };
 
-typedef uint8_t(*file_buf_handler)(void *ctx, const char __user *buf, uint16_t length);
 static file_buf_handler buf_handler[BUF_TYPE_NUM];
 static void *buf_handler_ctx[BUF_TYPE_NUM];
 void register_file_buf_handler(file_buf_handler handler, void *handler_ctx, uint8_t ucType)
@@ -331,6 +321,101 @@ static int WIFI_close(struct inode *inode, struct file *file)
 	return 0;
 }
 
+/*-----------------------------------------------------------------*/
+/*
+ *  Turning the WIFI function off and on, as writing "0" and "1" does.
+ *  The caller holds wr_mtx.
+ */
+/*-----------------------------------------------------------------*/
+static int wifi_func_off_locked(void)
+{
+	struct net_device *netdev = NULL;
+	struct PARAM_CUSTOM_P2P_SET_STRUCT p2pmode;
+
+	if (powered == 0) {
+		WIFI_INFO_FUNC("WIFI is already power off!\n");
+		wlan_mode = WLAN_MODE_HALT;
+		return 0;
+	}
+
+	netdev = dev_get_by_name(&init_net, ifname);
+	if (netdev == NULL) {
+		WIFI_ERR_FUNC("Fail to get %s net device\n", ifname);
+	} else {
+		p2pmode.u4Enable = 0;
+		p2pmode.u4Mode = 0;
+
+		if (pf_set_p2p_mode) {
+			if (pf_set_p2p_mode(netdev, p2pmode) != 0) {
+				WIFI_ERR_FUNC("Turn off p2p/ap mode fail");
+			} else {
+				WIFI_INFO_FUNC("Turn off p2p/ap mode");
+				wlan_mode = WLAN_MODE_HALT;
+			}
+		}
+		dev_put(netdev);
+		netdev = NULL;
+	}
+
+	if (mtk_wcn_wmt_func_off(WMTDRV_TYPE_WIFI) == MTK_WCN_BOOL_FALSE) {
+		WIFI_ERR_FUNC("WMT turn off WIFI fail!\n");
+		return -EIO;
+	}
+
+	WIFI_INFO_FUNC("WMT turn off WIFI OK!\n");
+	powered = 0;
+	wlan_mode = WLAN_MODE_HALT;
+	return 0;
+}
+
+static int wifi_func_on_locked(void)
+{
+	if (powered == 1) {
+		WIFI_INFO_FUNC("WIFI is already power on!\n");
+		return 0;
+	}
+
+	if (mtk_wcn_wmt_func_on(WMTDRV_TYPE_WIFI) == MTK_WCN_BOOL_FALSE) {
+		WIFI_ERR_FUNC("WMT turn on WIFI fail!\n");
+		return -EIO;
+	}
+
+	powered = 1;
+	WIFI_INFO_FUNC("WMT turn on WIFI success!\n");
+	wlan_mode = WLAN_MODE_HALT;
+	return 0;
+}
+
+/*-----------------------------------------------------------------*/
+/*
+ *  The same for the WLAN driver: there may be nobody in user space
+ *  who knows to write to /dev/wmtWifi.
+ */
+/*-----------------------------------------------------------------*/
+int wifi_func_on(void)
+{
+	int ret;
+
+	down(&wr_mtx);
+	ret = wifi_func_on_locked();
+	up(&wr_mtx);
+
+	return ret;
+}
+EXPORT_SYMBOL(wifi_func_on);
+
+int wifi_func_off(void)
+{
+	int ret;
+
+	down(&wr_mtx);
+	ret = wifi_func_off_locked();
+	up(&wr_mtx);
+
+	return ret;
+}
+EXPORT_SYMBOL(wifi_func_off);
+
 ssize_t WIFI_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
 	INT32 retval = -EIO;
@@ -351,55 +436,11 @@ ssize_t WIFI_write(struct file *filp, const char __user *buf, size_t count, loff
 		WIFI_INFO_FUNC("WIFI_write %s, length %zu\n", local, count);
 
 		if (local[0] == '0') {
-			if (powered == 0) {
-				WIFI_INFO_FUNC("WIFI is already power off!\n");
+			if (wifi_func_off_locked() == 0)
 				retval = count;
-				wlan_mode = WLAN_MODE_HALT;
-				goto done;
-			}
-
-			netdev = dev_get_by_name(&init_net, ifname);
-			if (netdev == NULL) {
-				WIFI_ERR_FUNC("Fail to get %s net device\n", ifname);
-			} else {
-				p2pmode.u4Enable = 0;
-				p2pmode.u4Mode = 0;
-
-				if (pf_set_p2p_mode) {
-					if (pf_set_p2p_mode(netdev, p2pmode) != 0) {
-						WIFI_ERR_FUNC("Turn off p2p/ap mode fail");
-					} else {
-						WIFI_INFO_FUNC("Turn off p2p/ap mode");
-						wlan_mode = WLAN_MODE_HALT;
-					}
-				}
-				dev_put(netdev);
-				netdev = NULL;
-			}
-
-			if (mtk_wcn_wmt_func_off(WMTDRV_TYPE_WIFI) == MTK_WCN_BOOL_FALSE) {
-				WIFI_ERR_FUNC("WMT turn off WIFI fail!\n");
-			} else {
-				WIFI_INFO_FUNC("WMT turn off WIFI OK!\n");
-				powered = 0;
-				retval = count;
-				wlan_mode = WLAN_MODE_HALT;
-			}
 		} else if (local[0] == '1') {
-			if (powered == 1) {
-				WIFI_INFO_FUNC("WIFI is already power on!\n");
+			if (wifi_func_on_locked() == 0)
 				retval = count;
-				goto done;
-			}
-
-			if (mtk_wcn_wmt_func_on(WMTDRV_TYPE_WIFI) == MTK_WCN_BOOL_FALSE) {
-				WIFI_ERR_FUNC("WMT turn on WIFI fail!\n");
-			} else {
-				powered = 1;
-				retval = count;
-				WIFI_INFO_FUNC("WMT turn on WIFI success!\n");
-				wlan_mode = WLAN_MODE_HALT;
-			}
 		} else if (!strncmp(local, "WR-BUF:", 7)) {
 			file_buf_handler handler = NULL;
 			VOID *ctx = NULL;
@@ -554,11 +595,23 @@ static int WIFI_init(void)
 	int32_t alloc_ret = 0;
 	int32_t cdev_err = 0;
 
+	/* before anybody can write to the device */
+	sema_init(&wr_mtx, 1);
+
 	/* Allocate char device */
 	alloc_ret = register_chrdev_region(dev, WIFI_devs, WIFI_DRIVER_NAME);
 	if (alloc_ret) {
-		WIFI_ERR_FUNC("Fail to register device numbers\n");
-		return alloc_ret;
+		/*
+		 * By rights, the major that this driver takes is spidev's, which
+		 * may be there already. The node is made for whichever major
+		 * (CREATE_NODE_DYNAMIC), so any other will do.
+		 */
+		alloc_ret = alloc_chrdev_region(&dev, 0, WIFI_devs, WIFI_DRIVER_NAME);
+		if (alloc_ret) {
+			WIFI_ERR_FUNC("Fail to register device numbers\n");
+			return alloc_ret;
+		}
+		WIFI_major = MAJOR(dev);
 	}
 
 	cdev_init(&WIFI_cdev, &WIFI_fops);
@@ -569,15 +622,13 @@ static int WIFI_init(void)
 		goto error;
 
 #if CREATE_NODE_DYNAMIC	/* mknod replace */
-	wmtwifi_class = class_create(THIS_MODULE, "wmtWifi");
+	wmtwifi_class = class_create("wmtWifi");
 	if (IS_ERR(wmtwifi_class))
 		goto error;
 	wmtwifi_dev = device_create(wmtwifi_class, NULL, dev, NULL, "wmtWifi");
 	if (IS_ERR(wmtwifi_dev))
 		goto error;
 #endif
-
-	sema_init(&wr_mtx, 1);
 
 	WIFI_INFO_FUNC("%s driver(major %d) installed\n", WIFI_DRIVER_NAME, WIFI_major);
 

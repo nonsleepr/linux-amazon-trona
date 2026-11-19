@@ -362,19 +362,19 @@ static VOID glFormatOutput(BOOLEAN fgTimeStamp, PINT_64 pi8VirtualWrPos, const P
 	INT_16 i2BufUsed = 0;
 	INT_16 i2TimeUsed = 0;
 	va_list ap;
-	struct timeval tval;
+	struct timespec64 tval;
 	struct rtc_time tm;
 	static UINT_8 aucBuf[TEMP_BUF_LEN];
 
 	pucTemp = &aucBuf[0];
 	if (fgTimeStamp) {
-		do_gettimeofday(&tval);
+		ktime_get_real_ts64(&tval);
 		tval.tv_sec -= sys_tz.tz_minuteswest * 60;
-		rtc_time_to_tm(tval.tv_sec, &tm);
+		rtc_time64_to_tm(tval.tv_sec, &tm);
 
 		i2TimeUsed = (INT_16)kalSnprintf(pucTemp, TEMP_BUF_LEN, "%04d-%02d-%02d %02d:%02d:%02d.%03d ",
 					 tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
-					 tm.tm_min, tm.tm_sec, (INT_32)(tval.tv_usec / USEC_PER_MSEC));
+					 tm.tm_min, tm.tm_sec, (INT_32)(tval.tv_nsec / NSEC_PER_MSEC));
 		if (i2TimeUsed < 0) {
 			DBGLOG(INIT, ERROR, "error to sprintf time\n");
 			return;
@@ -547,10 +547,9 @@ static ssize_t wakeup_log_configure(struct file *file, const char __user *buffer
 	return -EINVAL;
 }
 
-static const struct file_operations wakeup_log_ops = {
-	.owner = THIS_MODULE,
-	.read = wakeup_log_read,
-	.write = wakeup_log_configure,
+static const struct proc_ops wakeup_log_ops = {
+	.proc_read = wakeup_log_read,
+	.proc_write = wakeup_log_configure,
 };
 
 VOID glNotifyAppTxRx(P_GLUE_INFO_T prGlueInfo, PCHAR pcReason)
@@ -638,14 +637,14 @@ VOID glNotifyAppTxRx(P_GLUE_INFO_T prGlueInfo, PCHAR pcReason)
 
 VOID glLogSuspendResumeTime(BOOLEAN fgSuspend)
 {
-	struct timeval tval;
+	struct timespec64 tval;
 	struct rtc_time tm;
 	PCHAR pcTimeStr;
 	UINT_32 u4TimeStrLen;
 
-	do_gettimeofday(&tval);
+	ktime_get_real_ts64(&tval);
 	tval.tv_sec -= sys_tz.tz_minuteswest * 60;
-	rtc_time_to_tm(tval.tv_sec, &tm);
+	rtc_time64_to_tm(tval.tv_sec, &tm);
 	if (fgSuspend) {
 		pcTimeStr = &acSuspendTime[0];
 		u4TimeStrLen = sizeof(acSuspendTime);
@@ -655,7 +654,7 @@ VOID glLogSuspendResumeTime(BOOLEAN fgSuspend)
 	}
 	kalSnprintf(pcTimeStr, u4TimeStrLen, "%04d-%02d-%02d %02d:%02d:%02d.%03d",
 				tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour,
-				tm.tm_min, tm.tm_sec, (INT_32)(tval.tv_usec / USEC_PER_MSEC));
+				tm.tm_min, tm.tm_sec, (INT_32)(tval.tv_nsec / NSEC_PER_MSEC));
 }
 
 
@@ -722,10 +721,9 @@ static ssize_t procAppTRxConf(struct file *file, const char __user *buffer,
 	return -EINVAL;
 }
 
-static const struct file_operations app_trx_stat_ops = {
-	.owner = THIS_MODULE,
-	.read = procAppTRxRead,
-	.write = procAppTRxConf,
+static const struct proc_ops app_trx_stat_ops = {
+	.proc_read = procAppTRxRead,
+	.proc_write = procAppTRxConf,
 };
 #endif
 static ssize_t procDbgLevelRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
@@ -815,10 +813,9 @@ static ssize_t procDbgLevelWrite(struct file *file, const char __user *buffer, s
 }
 
 
-static const struct file_operations dbglevel_ops = {
-	.owner = THIS_MODULE,
-	.read = procDbgLevelRead,
-	.write = procDbgLevelWrite,
+static const struct proc_ops dbglevel_ops = {
+	.proc_read = procDbgLevelRead,
+	.proc_write = procDbgLevelWrite,
 };
 
 static ssize_t procPktDelayDbgCfgRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
@@ -933,10 +930,9 @@ static ssize_t procPktDelayDbgCfgWrite(struct file *file, const char __user *buf
 	return count;
 }
 
-static const struct file_operations proc_pkt_delay_dbg_ops = {
-	.owner = THIS_MODULE,
-	.read  = procPktDelayDbgCfgRead,
-	.write = procPktDelayDbgCfgWrite,
+static const struct proc_ops proc_pkt_delay_dbg_ops = {
+	.proc_read  = procPktDelayDbgCfgRead,
+	.proc_write = procPktDelayDbgCfgWrite,
 };
 
 static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer, size_t count, loff_t *data)
@@ -989,9 +985,8 @@ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer, 
 	return count;
 }
 
-static const struct file_operations proc_set_cam_ops = {
-	.owner = THIS_MODULE,
-	.write = procSetCamCfgWrite,
+static const struct proc_ops proc_set_cam_ops = {
+	.proc_write = procSetCamCfgWrite,
 };
 
 /*******************************************************************************
@@ -1115,10 +1110,9 @@ static ssize_t procMCRWrite(struct file *file, const char __user *buffer,
 
 }				/* end of procMCRWrite() */
 
-static const struct file_operations mcr_ops = {
-	.owner = THIS_MODULE,
-	.read = procMCRRead,
-	.write = procMCRWrite,
+static const struct proc_ops mcr_ops = {
+	.proc_read = procMCRRead,
+	.proc_write = procMCRWrite,
 };
 
 #if CFG_SUPPORT_DEBUG_FS
@@ -1182,10 +1176,9 @@ static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
 	return count;
 }
 
-static const struct file_operations roam_ops = {
-	.owner = THIS_MODULE,
-	.read = procRoamRead,
-	.write = procRoamWrite,
+static const struct proc_ops roam_ops = {
+	.proc_read = procRoamRead,
+	.proc_write = procRoamWrite,
 };
 
 static ssize_t procCountryRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
@@ -1260,10 +1253,9 @@ static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
 	return count;
 }
 
-static const struct file_operations country_ops = {
-	.owner = THIS_MODULE,
-	.read = procCountryRead,
-	.write = procCountryWrite,
+static const struct proc_ops country_ops = {
+	.proc_read = procCountryRead,
+	.proc_write = procCountryWrite,
 };
 
 static ssize_t procVersionRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
@@ -1283,9 +1275,8 @@ static ssize_t procVersionRead(struct file *filp, char __user *buf, size_t count
 	return (INT_32)u4CopySize;
 }
 
-static const struct file_operations version_ops = {
-	.owner = THIS_MODULE,
-	.read = procVersionRead,
+static const struct proc_ops version_ops = {
+	.proc_read = procVersionRead,
 };
 
 static ssize_t interrupt_stat_read(struct file *filp,
@@ -1337,9 +1328,8 @@ static ssize_t interrupt_stat_read(struct file *filp,
 	return (INT_32)u4CopySize;
 }
 
-static const struct file_operations int_stat_ops = {
-	.owner = THIS_MODULE,
-	.read = interrupt_stat_read,
+static const struct proc_ops int_stat_ops = {
+	.proc_read = interrupt_stat_read,
 };
 
 static ssize_t dtim_skip_count_read(struct file *filp,
@@ -1396,10 +1386,9 @@ static ssize_t dtim_skip_count_write(struct file *file,
 	return count;
 }
 
-static const struct file_operations dtim_ops = {
-	.owner = THIS_MODULE,
-	.read = dtim_skip_count_read,
-	.write = dtim_skip_count_write,
+static const struct proc_ops dtim_ops = {
+	.proc_read = dtim_skip_count_read,
+	.proc_write = dtim_skip_count_write,
 };
 #endif
 
@@ -1478,10 +1467,9 @@ static ssize_t procWifiCfgWrite(struct file *file, const char __user *buffer, si
 	return count;
 }
 
-static const struct file_operations wifi_cfg_ops = {
-	.owner = THIS_MODULE,
-	.read = procWifiCfgRead,
-	.write = procWifiCfgWrite,
+static const struct proc_ops wifi_cfg_ops = {
+	.proc_read = procWifiCfgRead,
+	.proc_write = procWifiCfgWrite,
 };
 #endif
 static ssize_t procAutoPerfCfgRead(struct file *filp, char __user *buf, size_t count, loff_t *f_pos)
@@ -1557,10 +1545,9 @@ static ssize_t procAutoPerfCfgWrite(struct file *file, const char *buffer, size_
 	return -EFAULT;
 }
 
-static const struct file_operations auto_perf_ops = {
-	.owner = THIS_MODULE,
-	.read = procAutoPerfCfgRead,
-	.write = procAutoPerfCfgWrite,
+static const struct proc_ops auto_perf_ops = {
+	.proc_read = procAutoPerfCfgRead,
+	.proc_write = procAutoPerfCfgWrite,
 };
 
 /* Provide a real-time monitor mechanism to end-user to monitor wlan status */
@@ -1719,10 +1706,9 @@ static ssize_t procDrvStatusCfg(struct file *file, const char *buffer, size_t co
 	return -EINVAL;
 }
 
-static const struct file_operations drv_status_ops = {
-	.owner = THIS_MODULE,
-	.read = procReadDrvStatus,
-	.write = procDrvStatusCfg,
+static const struct proc_ops drv_status_ops = {
+	.proc_read = procReadDrvStatus,
+	.proc_write = procDrvStatusCfg,
 };
 
 INT_32 procInitFs(VOID)
@@ -1780,6 +1766,10 @@ INT_32 procUninitProcFs(VOID)
 	remove_proc_entry(PROC_AUTO_PERF_CFG, gprProcNetRoot);
 	remove_proc_entry(PROC_DRV_STATUS, gprProcRoot);
 	remove_proc_subtree(PROC_ROOT_NAME, init_net.proc_net);
+	/* /proc/wlan itself: with it left behind, the module loads only once */
+	remove_proc_subtree(PROC_ROOT_NAME, NULL);
+	gprProcNetRoot = NULL;
+	gprProcRoot = NULL;
 	return 0;
 }
 
@@ -2237,10 +2227,9 @@ static ssize_t cfgWrite(struct file *filp, const char __user *buf, size_t count,
 	return count;
 }
 
-static const struct file_operations cfg_ops = {
-	.owner = THIS_MODULE,
-	.read = cfgRead,
-	.write = cfgWrite,
+static const struct proc_ops cfg_ops = {
+	.proc_read = cfgRead,
+	.proc_write = cfgWrite,
 };
 
 INT_32 cfgRemoveProcEntry(void)

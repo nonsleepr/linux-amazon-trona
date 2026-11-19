@@ -42,6 +42,14 @@
 *                              C O N S T A N T S
 ********************************************************************************
 */
+/*
+ * The second half of the driver version. MediaTek's build passes the time of
+ * the build in here; a kernel is to build the same every time.
+ */
+#ifndef DRIVER_BUILD_DATE
+#define DRIVER_BUILD_DATE "mainline"
+#endif
+
 /* These values must sync from Wifi HAL
  * /hardware/libhardware_legacy/include/hardware_legacy/wifi_hal.h
  */
@@ -1921,7 +1929,7 @@ int mtk_cfg80211_vendor_get_version(struct wiphy *wiphy, struct wireless_dev *wd
 		char wifiDriverVersionStr[] = NIC_DRIVER_VERSION_STRING"-"DRIVER_BUILD_DATE;
 		UINT_32 u4StrSize = strlen(wifiDriverVersionStr);
 		u4CopySize = (u4StrSize >= 64) ? 63 : u4StrSize;
-		strncpy(verInfoBuf, wifiDriverVersionStr, u4CopySize);
+		kalStrnCpy(verInfoBuf, wifiDriverVersionStr, u4CopySize);
 	} else if (attrlist->nla_type == LOGGER_ATTRIBUTE_FW_VER) {
 		WIFI_VER_INFO_T *prVerInfo;
 		prGlueInfo = (P_GLUE_INFO_T) wiphy_priv(wiphy);

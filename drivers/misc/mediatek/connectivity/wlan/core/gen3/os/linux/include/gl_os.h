@@ -135,6 +135,7 @@
 #include <linux/random.h>
 
 #include <linux/io.h>		/* readw and writew */
+#include <linux/sched/clock.h>	/* sched_clock() */
 
 #if WIRELESS_EXT > 12
 #include <net/iw_handler.h>
@@ -162,6 +163,24 @@
 #if CFG_SUPPORT_PASSPOINT
 #include <net/addrconf.h>
 #endif /* CFG_SUPPORT_PASSPOINT */
+
+/*
+ * <acpi/actypes.h> has macros with the names of ENUM_ACPI_STATE_T's
+ * enumerators in wlan_def.h
+ */
+#undef ACPI_STATE_D0
+#undef ACPI_STATE_D1
+#undef ACPI_STATE_D2
+#undef ACPI_STATE_D3
+
+/*
+ * The interfaces of the modules below this one: the WMT core and
+ * wmt_chrdev_wifi. Both call into this driver through pointers, and with kCFI
+ * the functions behind them must have exactly the types that the callers
+ * use, so their own headers are used here, not declarations of our own.
+ */
+#include "wmt_exp.h"
+#include "wmt_cdev_wifi.h"
 
 #include "gl_typedef.h"
 #include "typedef.h"
@@ -260,7 +279,6 @@ extern UINT_8 g_aucNvram[];
 #define ant_signal_trona {HIGH_ANT_SIGNAL, LOW_ANT_SIGNAL}
 
 extern unsigned int g_board_type;
-extern unsigned int idme_get_board_type(void);
 #endif
 
 #define GLUE_BOW_KFIFO_DEPTH        (1024)
@@ -1051,8 +1069,7 @@ BOOLEAN glUnregisterAmpc(P_GLUE_INFO_T prGlueInfo);
 
 P_GLUE_INFO_T wlanGetGlueInfo(VOID);
 
-UINT_16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb,
-			void *accel_priv, select_queue_fallback_t fallback);
+u16 wlanSelectQueue(struct net_device *dev, struct sk_buff *skb, struct net_device *sb_dev);
 
 VOID wlanDebugInit(VOID);
 
@@ -1071,8 +1088,7 @@ extern void wlanRegisterNotifier(void);
 extern void wlanUnregisterNotifier(void);
 
 
-typedef int (*set_p2p_mode) (struct net_device *netdev, PARAM_CUSTOM_P2P_SET_STRUCT_T p2pmode);
-extern void register_set_p2p_mode_handler(set_p2p_mode handler);
+/* set_p2p_mode and register_set_p2p_mode_handler() are in wmt_cdev_wifi.h */
 
 #if CFG_ENABLE_EARLY_SUSPEND
 extern int glRegisterEarlySuspend(struct early_suspend *prDesc,
@@ -1096,8 +1112,7 @@ INT_32 cfgCreateProcEntry(P_GLUE_INFO_T prGlueInfo);
 INT_32 cfgRemoveProcEntry(void);
 #endif
 
-typedef UINT_8 (*file_buf_handler) (PVOID ctx, const CHAR __user *buf, UINT_16 length);
-extern VOID register_file_buf_handler(file_buf_handler handler, PVOID ctx, UINT_8 ucType);
+/* file_buf_handler and register_file_buf_handler() are in wmt_cdev_wifi.h */
 
 int glRegisterPlatformDev(void);
 int glUnregisterPlatformDev(void);
@@ -1109,7 +1124,19 @@ int glWlanSetIndicateWoWFlag(void);
 
 #if CFG_SUPPORT_ANT_DIVERSITY
 extern int wmt_plat_is_support_ant_sw(void);
-extern int disp_lcm_get_vendor_id(void);
+
+/*
+ * MediaTek's display driver tells which vendor's panel is fitted, which ends
+ * up as GLUE_INFO_T::ucPanelType: with some panels, on some boards, the
+ * antenna is not to be switched, see GLUE_NOT_SUPPORT_DUAL_ANT(). There is no
+ * such interface here. The answer does not matter on trona, where
+ * ucPanelIdmePattern is ANT_SWITCH_PATTERN_IMDE_ONLY: only the IDME data
+ * decides, whatever the panel.
+ */
+static inline int disp_lcm_get_vendor_id(void)
+{
+	return 0;
+}
 #endif
 
 #endif /* _GL_OS_H */

@@ -238,8 +238,14 @@ typedef struct _PRIV_CONFIG_ENTRY {
 	UINT_8 ucValue;
 } PRIV_CONFIG_ENTRY, *PPRIV_CONFIG_ENTRY;
 
-typedef WLAN_STATUS(*PFN_OID_HANDLER_FUNC_REQ) (IN PVOID prAdapter,
-						IN OUT PVOID pvBuf, IN UINT_32 u4BufLen, OUT PUINT_32 pu4OutInfoLen);
+/*
+ * The OID handlers in the request table are called through pointers, so the
+ * table has them with their own type. This is PFN_OID_HANDLER_FUNC of
+ * wlan_lib.h, which comes after this file; it was a type with a void pointer
+ * for the adapter that every entry was cast to.
+ */
+typedef WLAN_STATUS(*PFN_OID_HANDLER_FUNC_REQ) (IN struct _ADAPTER_T *prAdapter,
+						IN PVOID pvBuf, IN UINT_32 u4BufLen, OUT PUINT_32 pu4OutInfoLen);
 
 typedef enum _ENUM_OID_METHOD_T {
 	ENUM_OID_GLUE_ONLY,

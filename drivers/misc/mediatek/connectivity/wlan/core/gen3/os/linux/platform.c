@@ -57,6 +57,7 @@
 #endif
 
 #include "gl_os.h"
+#include "precomp.h"
 
 #if CFG_ENABLE_EARLY_SUSPEND
 #include <linux/earlysuspend.h>
@@ -89,7 +90,7 @@
     static atomic_t fgSuspendFlag = ATOMIC_INIT(0);
     static atomic_t fgIndicateWoW = ATOMIC_INIT(0);
     static int wlan_drv_probe(struct platform_device *pdev);
-    static int wlan_drv_remove(struct platform_device *pdev);
+    static void wlan_drv_remove(struct platform_device *pdev);
     static int wlan_drv_suspend(struct platform_device *pdev, pm_message_t state);
     static int wlan_drv_resume(struct platform_device *pdev);
     static void wlan_drv_release(struct device *dev);
@@ -154,6 +155,16 @@ static int netdev_event(struct notifier_block *nb, unsigned long notification, v
 		prGlueInfo->fgIsDad = FALSE;
 	}
 #endif /* CFG_SUPPORT_PASSPOINT */
+
+	/*
+	 * The name is no proof that the device is one of this driver's, and
+	 * another driver's has something else in its private data
+	 */
+	prGlueInfo = wlanGetGlueInfo();
+	if (prGlueInfo == NULL ||
+	    (prDev != prGlueInfo->prDevHandler &&
+	     (prGlueInfo->prP2PInfo == NULL || prDev != prGlueInfo->prP2PInfo->prDevHandler)))
+		return NOTIFY_DONE;
 
 	prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(prDev));
 	if (prGlueInfo == NULL) {
@@ -463,11 +474,10 @@ static int wlan_drv_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int wlan_drv_remove(struct platform_device *pdev)
+static void wlan_drv_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
 	DBGLOG(INIT, INFO, "wlan platform driver remove\n");
-	return 0;
 }
 
 static void wlan_drv_shutdown(struct platform_device *pdev)
@@ -525,7 +535,8 @@ int glUnregisterPlatformDev(void)
 
 int glWlanSetSuspendFlag(void)
 {
-	return atomic_set(&fgSuspendFlag, 1);
+	atomic_set(&fgSuspendFlag, 1);
+	return 1;
 }
 
 int glWlanGetSuspendFlag(void)
@@ -545,12 +556,14 @@ int glWlanGetSuspendFlag(void)
 
 int glWlanSetIndicateWoWFlag(void)
 {
-	return atomic_set(&fgIndicateWoW, 1);
+	atomic_set(&fgIndicateWoW, 1);
+	return 1;
 }
 
 int glWlanClearSuspendFlag(void)
 {
-	return atomic_set(&fgSuspendFlag, 0);
+	atomic_set(&fgSuspendFlag, 0);
+	return 0;
 }
 
 int glIndicateWoWPacket(void *data)

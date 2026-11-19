@@ -78,6 +78,16 @@ int kalBoostCpu(unsigned int level)
 
 	return 0;
 }
+#else
+/*
+ * There is no CPU frequency or DRAM OPP boost to request for the WLAN
+ * performance monitor here. This takes the place of gl_kal.c's weak
+ * kalBoostCpu(), which logs a warning each time it is called.
+ */
+int kalBoostCpu(unsigned int level)
+{
+	return 0;
+}
 #endif
 
 #ifdef CONFIG_MTK_EMI

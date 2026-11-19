@@ -6096,7 +6096,7 @@ static VOID aisTxBtmResponseTimeout(IN P_ADAPTER_T prAdapter, ULONG ulParam)
 }
 
 #if CFG_SUPPORT_ANT_DIVERSITY
-extern INT_32 wmt_plat_wifi_ant_switch(UINT_8 ant_num);
+extern INT_32 wmt_plat_wifi_ant_switch(UINT_32 ant_num);	/* as the WMT core defines it */
 
 VOID aisFsmAntSwitchSteps(P_ADAPTER_T prAdapter,
 		enum AIS_ANT_SWITCH_STATE_T eNextState)

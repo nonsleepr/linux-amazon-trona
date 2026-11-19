@@ -35,7 +35,7 @@
 #include "mgmt/rsn.h"
 #include "gl_wext.h"
 #include "debug.h"
-#include <stddef.h>
+#include <linux/stddef.h>
 
 #ifdef FW_CFG_SUPPORT
 #include "fwcfg.h"
@@ -12799,7 +12799,7 @@ wlanoidSetScanMacOui(IN P_ADAPTER_T prAdapter,
 }
 
 #if CFG_SUPPORT_ANT_DIVERSITY
-extern INT_32 wmt_plat_wifi_ant_switch(UINT_8 ant_num);
+extern INT_32 wmt_plat_wifi_ant_switch(UINT_32 ant_num);	/* as the WMT core defines it */
 
 /*----------------------------------------------------------------------------*/
 /*!

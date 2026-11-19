@@ -32,7 +32,6 @@
 */
 #include "precomp.h"
 #include "rlm_txpwr_init.h"
-#include "abx123_rlm_txpwr_init.h"
 
 /*******************************************************************************
 *                              C O N S T A N T S
@@ -2034,27 +2033,11 @@ struct board_id_country_power_table {
 };
 
 struct board_id_country_power_table board_id_country_table_list[] = {
-	{ DEV_TYPE_ID_abc123, &default_rRlmPowerLimitConfiguration,&default_arSupportedRegDomains,
-	  &default_arSupportedRegDomains_Passive, &default_arSupportedTxPwrRegion},
-	{ DEV_TYPE_ID_TRONA, &default_rRlmPowerLimitConfiguration, &default_arSupportedRegDomains,
-	  &default_arSupportedRegDomains_Passive, &default_arSupportedTxPwrRegion},
-	{ DEV_TYPE_ID_abx123, &abx123_rRlmPowerLimitConfiguration, &abx123_arSupportedRegDomains,
-	  &abx123_arSupportedRegDomains_Passive, &abx123_arSupportedTxPwrRegion},
+	{ DEV_TYPE_ID_abc123, default_rRlmPowerLimitConfiguration, default_arSupportedRegDomains,
+	  default_arSupportedRegDomains_Passive, default_arSupportedTxPwrRegion},
+	{ DEV_TYPE_ID_TRONA, default_rRlmPowerLimitConfiguration, default_arSupportedRegDomains,
+	  default_arSupportedRegDomains_Passive, default_arSupportedTxPwrRegion},
 };
-
-void rlmPowerTableSizeInit(void)
-{
-	if (g_board_type == DEV_TYPE_ID_abx123) {
-		REG_COUNTRY_POWER_LIMIT_TABLE_NUM =
-			sizeof(abx123_rRlmPowerLimitConfiguration) / sizeof(COUNTRY_POWER_LIMIT_TABLE_CONFIGURATION);
-		REG_DOMAIN_GROUP_NUM =
-			sizeof(abx123_arSupportedRegDomains) / sizeof(DOMAIN_INFO_ENTRY);
-		REG_DOMAIN_PASSIVE_GROUP_NUM =
-			sizeof(abx123_arSupportedRegDomains_Passive) / sizeof(DOMAIN_INFO_ENTRY);
-		REG_TX_POWER_GROUP_NUM =
-			sizeof(abx123_arSupportedTxPwrRegion) / sizeof(TX_PWR_REGION_INFO_ENTRY);
-	}
-}
 
 WLAN_STATUS rlmWlanCountryTableInit(void)
 {
@@ -2065,7 +2048,6 @@ WLAN_STATUS rlmWlanCountryTableInit(void)
 			g_arSupportedRegDomains = board_id_country_table_list[i].RegDomains;
 			g_arSupportedRegDomains_Passive = board_id_country_table_list[i].RegDomains_passive;
 			g_arSupportedTxPwrRegion = board_id_country_table_list[i].TxPwrRegion;
-			rlmPowerTableSizeInit();
 			return WLAN_STATUS_SUCCESS;
 		}
 	}

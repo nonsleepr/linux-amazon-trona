@@ -1075,6 +1075,26 @@ VOID wlanbowCmdEventLinkConnected(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T prCm
 
 /*----------------------------------------------------------------------------*/
 /*!
+* \brief bowDisconnectLink() as a TX done handler: such a handler returns a
+*        status, and is called through a pointer to a function that does.
+*
+* \param[in] prAdapter          Pointer to the Adapter structure.
+* \param[in] prMsduInfo         Pointer to the MSDU of the deauth frame.
+* \param[in] rTxDoneStatus      Return TX status of the deauth frame.
+*
+* \retval WLAN_STATUS_SUCCESS
+*/
+/*----------------------------------------------------------------------------*/
+static WLAN_STATUS
+bowDisconnectLinkTxDone(IN P_ADAPTER_T prAdapter, IN P_MSDU_INFO_T prMsduInfo, IN ENUM_TX_RESULT_CODE_T rTxDoneStatus)
+{
+	bowDisconnectLink(prAdapter, prMsduInfo, rTxDoneStatus);
+
+	return WLAN_STATUS_SUCCESS;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
 * \brief command done handler for CMD_ID_CMD_BT_OVER_WIFI
 *
 * \param[in] prAdapter      Pointer to the Adapter structure.
@@ -1178,7 +1198,7 @@ VOID wlanbowCmdEventLinkDisconnected(IN P_ADAPTER_T prAdapter, IN P_CMD_INFO_T p
 			bowGetBowTableState(prAdapter, prBowLinkDisconnected->aucPeerAddress));
 		authSendDeauthFrame(prAdapter, NULL, prBowFsmInfo->prTargetStaRec,
 				    (P_SW_RFB_T) NULL, REASON_CODE_DEAUTH_LEAVING_BSS,
-				    (PFN_TX_DONE_HANDLER) bowDisconnectLink);
+				    bowDisconnectLinkTxDone);
 	}
 #endif
 

@@ -1039,9 +1039,7 @@ int wlanSuspendRekeyOffload(P_GLUE_INFO_T prGlueInfo, IN UINT_8 ucRekeyDisable);
 #endif
 
 #if CFG_NOTIFY_TX_HANG_METRIC
-#if defined(CONFIG_AMAZON_METRICS_LOG) || defined(CONFIG_AMZN_METRICS_LOG)
 VOID wlanNotifyTxHangMetric(BOOLEAN fgIsPid);
-#endif
 #endif
 
 #if CFG_SUPPORT_RSSI_STATISTICS

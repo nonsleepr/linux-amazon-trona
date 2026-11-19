@@ -70,9 +70,9 @@ static void mtk_wifi_trigger_wlan_reset(struct work_struct *work);
 *                   F U N C T I O N   D E C L A R A T I O N S
 ********************************************************************************
 */
-static void *glResetCallback(enum ENUM_WMTDRV_TYPE eSrcType,
-			     enum ENUM_WMTDRV_TYPE eDstType,
-			     enum ENUM_WMTMSG_TYPE eMsgType, void *prMsgBody, unsigned int u4MsgLength);
+static VOID glResetCallback(ENUM_WMTDRV_TYPE_T eSrcType,
+			    ENUM_WMTDRV_TYPE_T eDstType,
+			    ENUM_WMTMSG_TYPE_T eMsgType, PVOID prMsgBody, UINT32 u4MsgLength);
 
 /*******************************************************************************
 *                              F U N C T I O N S
@@ -92,7 +92,7 @@ static void *glResetCallback(enum ENUM_WMTDRV_TYPE eSrcType,
 VOID glResetInit(VOID)
 {
 	/* 1. Register reset callback */
-	mtk_wcn_wmt_msgcb_reg(WMTDRV_TYPE_WIFI, (PF_WMT_CB) glResetCallback);
+	mtk_wcn_wmt_msgcb_reg(WMTDRV_TYPE_WIFI, glResetCallback);
 
 	/* 2. Initialize reset work */
 	INIT_WORK(&(wifi_rst.rst_work), mtk_wifi_reset);
@@ -116,6 +116,13 @@ VOID glResetUninit(VOID)
 {
 	/* 1. Deregister reset callback */
 	mtk_wcn_wmt_msgcb_unreg(WMTDRV_TYPE_WIFI);
+
+	/* 2. No reset work may be left to run when the module is gone */
+	cancel_work_sync(&(wifi_rst.rst_work));
+	cancel_work_sync(&(wifi_rst.rst_trigger_work));
+#if CFG_WLAN_RESET_SUPPORT
+	cancel_work_sync(&(wifi_rst.wlan_rst_work));
+#endif
 }
 
 /*----------------------------------------------------------------------------*/
@@ -131,14 +138,14 @@ VOID glResetUninit(VOID)
  * @retval
  */
 /*----------------------------------------------------------------------------*/
-static void *glResetCallback(enum ENUM_WMTDRV_TYPE eSrcType,
-			     enum ENUM_WMTDRV_TYPE eDstType,
-			     enum ENUM_WMTMSG_TYPE eMsgType, void *prMsgBody, unsigned int u4MsgLength)
+static VOID glResetCallback(ENUM_WMTDRV_TYPE_T eSrcType,
+			    ENUM_WMTDRV_TYPE_T eDstType,
+			    ENUM_WMTMSG_TYPE_T eMsgType, PVOID prMsgBody, UINT32 u4MsgLength)
 {
 	switch (eMsgType) {
 	case WMTMSG_TYPE_RESET:
-		if (u4MsgLength == sizeof(enum ENUM_WMTRSTMSG_TYPE)) {
-			enum ENUM_WMTRSTMSG_TYPE *prRstMsg = (enum ENUM_WMTRSTMSG_TYPE *) prMsgBody;
+		if (u4MsgLength == sizeof(ENUM_WMTRSTMSG_TYPE_T)) {
+			P_ENUM_WMTRSTMSG_TYPE_T prRstMsg = (P_ENUM_WMTRSTMSG_TYPE_T) prMsgBody;
 
 			switch (*prRstMsg) {
 			case WMTRSTMSG_RESET_START:
@@ -171,8 +178,6 @@ static void *glResetCallback(enum ENUM_WMTDRV_TYPE eSrcType,
 	default:
 		break;
 	}
-
-	return NULL;
 }
 
 /*----------------------------------------------------------------------------*/

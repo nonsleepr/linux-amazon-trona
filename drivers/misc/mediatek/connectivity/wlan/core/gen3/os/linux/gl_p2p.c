@@ -94,7 +94,7 @@ static struct cfg80211_ops mtk_p2p_ops = {
 	.set_wiphy_params = mtk_p2p_cfg80211_set_wiphy_params,
 	.del_station = mtk_p2p_cfg80211_del_station,
 	.set_bitrate_mask = mtk_p2p_cfg80211_set_bitrate_mask,
-	.mgmt_frame_register = mtk_p2p_cfg80211_mgmt_frame_register,
+	.update_mgmt_frame_registrations = mtk_p2p_cfg80211_update_mgmt_frame_registrations,
 	.get_station = mtk_p2p_cfg80211_get_station,
 	.add_key = mtk_p2p_cfg80211_add_key,
 	.get_key = mtk_p2p_cfg80211_get_key,
@@ -117,7 +117,8 @@ static const struct wiphy_vendor_command mtk_p2p_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_GET_CHANNEL_LIST
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_get_channel_list
+		.doit = mtk_cfg80211_vendor_get_channel_list,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 	{
 		{
@@ -125,7 +126,8 @@ static const struct wiphy_vendor_command mtk_p2p_vendor_ops[] = {
 			.subcmd = WIFI_SUBCMD_SET_COUNTRY_CODE
 		},
 		.flags = WIPHY_VENDOR_CMD_NEED_WDEV | WIPHY_VENDOR_CMD_NEED_NETDEV,
-		.doit = mtk_cfg80211_vendor_set_country_code
+		.doit = mtk_cfg80211_vendor_set_country_code,
+		.policy = VENDOR_CMD_RAW_DATA
 	},
 };
 
@@ -333,11 +335,13 @@ static struct net_device_stats *p2pGetStats(IN struct net_device *prDev);
 
 static void p2pSetMulticastList(IN struct net_device *prDev);
 
-static int p2pHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev);
+static netdev_tx_t p2pHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev);
 
 static int p2pSetMACAddress(IN struct net_device *prDev, void *addr);
 
 static int p2pDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd);
+
+static int p2pSiocDevPrivate(struct net_device *prDev, struct ifreq *prIfReq, void __user *prData, int i4Cmd);
 
 #if 0
 
@@ -419,7 +423,7 @@ const struct net_device_ops p2p_netdev_ops = {
 	.ndo_set_mac_address = p2pSetMACAddress,
 	.ndo_set_rx_mode = p2pSetMulticastList,
 	.ndo_get_stats = p2pGetStats,
-	.ndo_do_ioctl = p2pDoIOCTL,
+	.ndo_siocdevprivate = p2pSiocDevPrivate,
 	.ndo_start_xmit = p2pHardStartXmit,
 	/* .ndo_select_queue       = p2pSelectQueue, */
 	.ndo_select_queue = wlanSelectQueue,
@@ -764,7 +768,7 @@ BOOLEAN glRegisterP2P(P_GLUE_INFO_T prGlueInfo, const char *prDevName, BOOLEAN f
 	/* 4.2 fill hardware address */
 	COPY_MAC_ADDR(rMacAddr, prAdapter->rMyMacAddr);
 	rMacAddr[0] ^= 0x2;	/* change to local administrated address */
-	ether_addr_copy(prGlueInfo->prP2PInfo->prDevHandler->dev_addr, rMacAddr);
+	eth_hw_addr_set(prGlueInfo->prP2PInfo->prDevHandler, rMacAddr);
 	ether_addr_copy(prGlueInfo->prP2PInfo->prDevHandler->perm_addr, prGlueInfo->prP2PInfo->prDevHandler->dev_addr);
 
 	/* 4.3 register callback functions */
@@ -905,6 +909,10 @@ free_wdev:
 void glP2pDestroyWirelessDevice(void)
 {
 #if CFG_ENABLE_WIFI_DIRECT_CFG_80211
+	/* glP2pCreateWirelessDevice() may have failed */
+	if (!gprP2pWdev)
+		return;
+
 	wiphy_unregister(gprP2pWdev->wiphy);
 	wiphy_free(gprP2pWdev->wiphy);
 	kfree(gprP2pWdev);
@@ -1273,7 +1281,7 @@ void mtk_p2p_wext_set_Multicastlist(P_GLUE_INFO_T prGlueInfo)
  * \retval NETDEV_TX_BUSY - on failure, packet will be discarded by upper layer.
  */
 /*----------------------------------------------------------------------------*/
-int p2pHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev)
+netdev_tx_t p2pHardStartXmit(IN struct sk_buff *prSkb, IN struct net_device *prDev)
 {
 	P_NETDEV_PRIVATE_GLUE_INFO prNetDevPrivate = (P_NETDEV_PRIVATE_GLUE_INFO) NULL;
 	P_GLUE_INFO_T prGlueInfo = NULL;
@@ -1449,6 +1457,27 @@ int p2pDoIOCTL(struct net_device *prDev, struct ifreq *prIfReq, int i4Cmd)
 
 	return ret;
 }				/* end of p2pDoIOCTL() */
+
+/*----------------------------------------------------------------------------*/
+/*!
+ * \brief A method of struct net_device, for the private ioctls SIOCDEVPRIVATE
+ *        to SIOCDEVPRIVATE + 15: see wlanSiocDevPrivate().
+ *
+ * \param[in] prDev      Linux kernel netdevice
+ * \param[in] prIfReq    Our private ioctl request structure
+ * \param[in] prData     The request's ifr_data, also right for a compat task
+ * \param[in] i4Cmd      Command ID
+ *
+ * \retval 0  The IOCTL command is executed successfully.
+ * \retval <0 The execution of IOCTL command is failed.
+ */
+/*----------------------------------------------------------------------------*/
+static int p2pSiocDevPrivate(struct net_device *prDev, struct ifreq *prIfReq, void __user *prData, int i4Cmd)
+{
+	prIfReq->ifr_data = prData;
+
+	return p2pDoIOCTL(prDev, prIfReq, i4Cmd);
+}
 
 /*----------------------------------------------------------------------------*/
 /*!

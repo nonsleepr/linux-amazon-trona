@@ -87,7 +87,7 @@ static int HifAhbMiscClose(IN struct inode *Inodep, IN struct file *Filp);
 
 static int HifAhbPltmProbe(IN struct platform_device *pDev);
 
-static int HifAhbPltmRemove(IN struct platform_device *pDev);
+static void HifAhbPltmRemove(IN struct platform_device *pDev);
 
 #ifdef CONFIG_PM
 static int HifAhbPltmSuspend(IN struct platform_device *pDev, pm_message_t message);
@@ -148,10 +148,15 @@ static struct miscdevice MtkAhbDriver = {
 #else
 
 #ifdef CONFIG_OF
+/*
+ * Not MediaTek's "mediatek,wifi": the node's reg entries are others, see
+ * glSetHifInfo()
+ */
 static const struct of_device_id apwifi_of_ids[] = {
-	{.compatible = "mediatek,wifi",},
+	{.compatible = "mediatek,mt8183-consys-wifi",},
 	{}
 };
+MODULE_DEVICE_TABLE(of, apwifi_of_ids);
 #endif
 
 struct platform_driver MtkAhbPltmDriver = {
@@ -170,10 +175,19 @@ struct platform_driver MtkAhbPltmDriver = {
 	.suspend = NULL,
 	.resume = NULL,
 #endif /* CONFIG_PM */
-	.remove = __exit_p(HifAhbPltmRemove),
+	.remove = HifAhbPltmRemove,
 };
 
 static struct platform_device *HifAhbPDev;
+
+/*
+ * Switches the WIFI function on once the driver is registered with the WMT
+ * core, as writing "1" to /dev/wmtWifi does: MediaTek's stack leaves that to
+ * Android's WiFi service.
+ */
+static void HifAhbAutostart(struct work_struct *work);
+static void HifAhbAutostartStop(void);
+static DECLARE_WORK(HifAhbAutostartWork, HifAhbAutostart);
 
 #endif /* CONF_HIF_DEV_MISC */
 
@@ -227,6 +241,11 @@ VOID glUnregisterBus(remove_card pfRemove)
 {
 	ASSERT(pfRemove);
 
+#if (CONF_HIF_DEV_MISC == 0)
+	/* If the WIFI function is still on, have the WMT core remove us first */
+	HifAhbAutostartStop();
+#endif
+
 	pfRemove();
 
 #if (CONF_HIF_DEV_MISC == 1)
@@ -273,6 +292,33 @@ VOID glResetHif(GLUE_INFO_T *GlueInfo)
 /*----------------------------------------------------------------------------*/
 UINT_8 **g_pHifRegBaseAddr;
 
+#ifdef CONFIG_OF
+/*
+ * INFRACFG is used for debugging only: the PSE client remap register is
+ * written and bus protection registers are read when the chip looks stuck.
+ * The system controller that the node's "mediatek,infracfg" points to has
+ * the registers; they are mapped once more here, as the code that uses them
+ * (some of it not specific to Linux) wants a pointer, not a regmap. Without
+ * the property there is no mapping and no such debugging.
+ */
+static PUINT_8 HifAhbMapInfracfg(struct device_node *prNode)
+{
+	struct device_node *prInfracfg;
+	PUINT_8 pucBase;
+
+	prInfracfg = of_parse_phandle(prNode, "mediatek,infracfg", 0);
+	if (!prInfracfg) {
+		DBGLOG(INIT, WARN, "No mediatek,infracfg in DT, less to dump for debugging\n");
+		return NULL;
+	}
+
+	pucBase = (PUINT_8)of_iomap(prInfracfg, 0);
+	of_node_put(prInfracfg);
+
+	return pucBase;
+}
+#endif
+
 VOID glSetHifInfo(GLUE_INFO_T *GlueInfo, ULONG ulCookie)
 {
 	GL_HIF_INFO_T *HifInfo;
@@ -289,14 +335,21 @@ VOID glSetHifInfo(GLUE_INFO_T *GlueInfo, ULONG ulCookie)
 	SET_NETDEV_DEV(GlueInfo->prDevHandler, HifInfo->Dev);
 
 #ifdef CONFIG_OF
+	/*
+	 * reg of a "mediatek,mt8183-consys-wifi" node: 0 is the WIFI host
+	 * interface, 1 the CQDMA channel (see HifDmaInit()) and 2 the CONN
+	 * remap configuration. MediaTek's device tree has INFRACFG between
+	 * the last two; here that is another device's, and the node points
+	 * there instead.
+	 */
 	HifInfo->HifRegBaseAddr = (PUINT_8)of_iomap(HifInfo->Dev->of_node, 0);
 	if (of_property_read_u32_index(HifInfo->Dev->of_node, "reg", 0, &val_h) ||
 	    of_property_read_u32_index(HifInfo->Dev->of_node, "reg", 1, &val)) {
 		DBGLOG(INIT, ERROR, "Failed to get WIFI-HIF base addr from DT!! Tx/Rx maybe abnormal!!\n");
 	}
 	HifInfo->HifRegPhyBase = (((ULONG)val_h << 16) << 16) | (ULONG)val;
-	HifInfo->InfraRegBaseAddr = (PUINT_8)of_iomap(HifInfo->Dev->of_node, 2);
-	HifInfo->ConnCfgRegBaseAddr = (PUINT_8)of_iomap(HifInfo->Dev->of_node, 3);
+	HifInfo->InfraRegBaseAddr = HifAhbMapInfracfg(HifInfo->Dev->of_node);
+	HifInfo->ConnCfgRegBaseAddr = (PUINT_8)of_iomap(HifInfo->Dev->of_node, 2);
 #else
 	HifInfo->HifRegBaseAddr = ioremap(HIF_DRV_BASE, HIF_DRV_LENGTH);
 	HifInfo->HifRegPhyBase = HIF_DRV_BASE;
@@ -1123,6 +1176,12 @@ static int HifAhbProbe(VOID)
 
 	DBGLOG(INIT, TRACE, "HifAhbProbe()\n");
 
+	/* the firmware is loaded to there, and runs from there */
+	if (!gConEmiPhyBase) {
+		DBGLOG(INIT, ERROR, "No CONSYS EMI memory, WIFI cannot be started\n");
+		return -1;
+	}
+
 	/* power on WiFi TX PA 3.3V and HIF GDMA clock */
 	mtk_wcn_consys_hw_wifi_paldo_ctrl(1);	/* switch to HW mode */
 
@@ -1187,7 +1246,7 @@ static int HifAhbBusCntClr(VOID)
 	return 0;
 }
 
-static int hifAhbSetMpuProtect(BOOLEAN enable)
+static int hifAhbSetMpuProtect(bool enable)
 {
 	kalSetEmiMpuProtection(gConEmiPhyBase, WIFI_EMI_MEM_SIZE, enable);
 	return 0;
@@ -1250,7 +1309,7 @@ static int HifAhbMiscClose(IN struct inode *Inodep, IN struct file *Filp)
 /*----------------------------------------------------------------------------*/
 static int HifAhbPltmProbe(IN struct platform_device *pDev)
 {
-	struct MTK_WCN_WMT_WLAN_CB_INFO rWmtCb;
+	MTK_WCN_WMT_WLAN_CB_INFO rWmtCb;
 
 	DBGLOG(INIT, INFO, "HifAhbPltmProbe\n");
 
@@ -1260,7 +1319,7 @@ static int HifAhbPltmProbe(IN struct platform_device *pDev)
 	wmt_set_jtag_for_mcu();
 	wmt_set_jtag_for_gps();
 #endif /* CONF_HIF_PMIC_TEST */
-	kalMemZero(&rWmtCb, sizeof(struct MTK_WCN_WMT_WLAN_CB_INFO));
+	kalMemZero(&rWmtCb, sizeof(MTK_WCN_WMT_WLAN_CB_INFO));
 	/* Register WIFI probe/remove functions to WMT */
 	rWmtCb.wlan_probe_cb = HifAhbProbe;
 	rWmtCb.wlan_remove_cb = HifAhbRemove;
@@ -1269,7 +1328,46 @@ static int HifAhbPltmProbe(IN struct platform_device *pDev)
 	rWmtCb.wlan_emi_mpu_set_protection_cb = hifAhbSetMpuProtect;
 	mtk_wcn_wmt_wlan_reg(&rWmtCb);
 
+	/*
+	 * Nobody may ever write to /dev/wmtWifi: switch WIFI on ourselves.
+	 * Not from here, it takes seconds: the chip is powered up, patched
+	 * and the WIFI firmware is loaded.
+	 */
+	queue_work(system_long_wq, &HifAhbAutostartWork);
+
 	return 0;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+* \brief This work does what writing "1" to /dev/wmtWifi does: it has the WMT
+*        core switch the WIFI function on, which powers the chip up as needed
+*        and calls HifAhbProbe(), where the net device is made.
+*
+* \param[in] work           The work.
+*
+* \return (none)
+*/
+/*----------------------------------------------------------------------------*/
+static void HifAhbAutostart(struct work_struct *work)
+{
+	if (wifi_func_on())
+		DBGLOG(INIT, ERROR, "WIFI was not switched on, write 1 to /dev/wmtWifi to try again\n");
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+* \brief This function undoes HifAhbAutostart(), or the write to /dev/wmtWifi
+*        that switched the WIFI function on, as writing "0" there does.
+*
+* \return (none)
+*/
+/*----------------------------------------------------------------------------*/
+static void HifAhbAutostartStop(void)
+{
+	cancel_work_sync(&HifAhbAutostartWork);
+	if (wifi_func_off())
+		DBGLOG(INIT, ERROR, "WIFI was not switched off\n");
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1281,10 +1379,12 @@ static int HifAhbPltmProbe(IN struct platform_device *pDev)
 * \return 0
 */
 /*----------------------------------------------------------------------------*/
-static int HifAhbPltmRemove(IN struct platform_device *pDev)
+static void HifAhbPltmRemove(IN struct platform_device *pDev)
 {
+	/* The WMT core must not be left with a WIFI function it cannot remove */
+	HifAhbAutostartStop();
+
 	mtk_wcn_wmt_wlan_unreg();
-	return 0;
 }
 
 #ifdef CONFIG_PM
@@ -1384,6 +1484,17 @@ void kalDumpAhbDebugInfo(P_GLUE_INFO_T prGlueInfo, UINT_16 u2ChipID)
 		       u4InfraPseOffset, u2ChipID);
 		break;
 	}
+
+	/* The PSE client debug CR is only there with the remap set up */
+	if (!prGlueInfo->rHifInfo.InfraRegBaseAddr || !prGlueInfo->rHifInfo.ConnCfgRegBaseAddr) {
+		DBGLOG(RX, ERROR, "No INFRACFG or CONN remap config mapping, PSE client debug CR not dumped\n");
+		DBGLOG(RX, ERROR,
+		       "CONN_HIF_DBGCR12: 0x%08x\n",
+		       CONNSYS_REG_READ(prGlueInfo->rHifInfo.HifRegBaseAddr,
+					CONN_HIF_DBGCR12));
+		return;
+	}
+
 	if (u2ChipID == 0x6771) {
 		val = 0x800c;
 		CONNSYS_REG_WRITE(prGlueInfo->rHifInfo.InfraRegBaseAddr,
