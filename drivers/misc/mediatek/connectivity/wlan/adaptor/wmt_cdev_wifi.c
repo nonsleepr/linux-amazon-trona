@@ -28,6 +28,8 @@
 #include <linux/netdevice.h>
 #include <linux/inetdevice.h>
 #include <linux/string.h>
+#include <linux/suspend.h>
+#include <linux/workqueue.h>
 
 #include "fw_log_wifi.h"
 #include "wmt_exp.h"
@@ -323,6 +325,18 @@ static int WIFI_close(struct inode *inode, struct file *file)
 
 /*-----------------------------------------------------------------*/
 /*
+ *  A system suspend takes the power of the SoC's infra domain, and with it
+ *  the state of the BTIF and of the DMA channels the chip is talked to
+ *  through; an open BTIF refuses the suspend for that. So WIFI, and with it
+ *  the chip, is off for the time of a suspend, and a request to switch it on
+ *  in that time is kept for after it. Both protected by wr_mtx.
+ */
+/*-----------------------------------------------------------------*/
+static bool wifi_suspending;
+static bool wifi_on_after_suspend;
+
+/*-----------------------------------------------------------------*/
+/*
  *  Turning the WIFI function off and on, as writing "0" and "1" does.
  *  The caller holds wr_mtx.
  */
@@ -331,6 +345,9 @@ static int wifi_func_off_locked(void)
 {
 	struct net_device *netdev = NULL;
 	struct PARAM_CUSTOM_P2P_SET_STRUCT p2pmode;
+
+	/* Whoever asks for this during a suspend doesn't want WIFI back after it */
+	wifi_on_after_suspend = false;
 
 	if (powered == 0) {
 		WIFI_INFO_FUNC("WIFI is already power off!\n");
@@ -370,6 +387,12 @@ static int wifi_func_off_locked(void)
 
 static int wifi_func_on_locked(void)
 {
+	if (wifi_suspending) {
+		WIFI_INFO_FUNC("WIFI power on is put off until after the suspend\n");
+		wifi_on_after_suspend = true;
+		return 0;
+	}
+
 	if (powered == 1) {
 		WIFI_INFO_FUNC("WIFI is already power on!\n");
 		return 0;
@@ -415,6 +438,57 @@ int wifi_func_off(void)
 	return ret;
 }
 EXPORT_SYMBOL(wifi_func_off);
+
+/*-----------------------------------------------------------------*/
+/*
+ *  Switching WIFI back on after a suspend takes seconds: the chip is
+ *  powered up and patched and gets its WIFI firmware again. The one who
+ *  woke the system up doesn't wait for that.
+ */
+/*-----------------------------------------------------------------*/
+static void wifi_resume_work_fn(struct work_struct *work)
+{
+	if (wifi_func_on())
+		WIFI_ERR_FUNC("WIFI was not switched on again after the suspend\n");
+}
+static DECLARE_WORK(wifi_resume_work, wifi_resume_work_fn);
+
+static int wifi_pm_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+	bool on;
+	int ret = 0;
+
+	switch (action) {
+	case PM_SUSPEND_PREPARE:
+		/* This waits for a power on or off that is under way */
+		down(&wr_mtx);
+		on = powered;
+		ret = wifi_func_off_locked();
+		if (ret == 0) {
+			wifi_suspending = true;
+			wifi_on_after_suspend = on;
+		}
+		up(&wr_mtx);
+		if (ret)
+			WIFI_ERR_FUNC("WIFI is still on, no suspend\n");
+		break;
+	case PM_POST_SUSPEND:
+		down(&wr_mtx);
+		on = wifi_on_after_suspend;
+		wifi_suspending = false;
+		wifi_on_after_suspend = false;
+		up(&wr_mtx);
+		if (on)
+			queue_work(system_long_wq, &wifi_resume_work);
+		break;
+	}
+
+	return notifier_from_errno(ret);
+}
+
+static struct notifier_block wifi_pm_nb = {
+	.notifier_call = wifi_pm_notify,
+};
 
 ssize_t WIFI_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos)
 {
@@ -630,6 +704,8 @@ static int WIFI_init(void)
 		goto error;
 #endif
 
+	register_pm_notifier(&wifi_pm_nb);
+
 	WIFI_INFO_FUNC("%s driver(major %d) installed\n", WIFI_DRIVER_NAME, WIFI_major);
 
 #ifdef CONFIG_MTK_CONNSYS_DEDICATED_LOG_PATH
@@ -664,6 +740,9 @@ error:
 static void WIFI_exit(void)
 {
 	dev_t dev = MKDEV(WIFI_major, 0);
+
+	unregister_pm_notifier(&wifi_pm_nb);
+	cancel_work_sync(&wifi_resume_work);
 
 #if CREATE_NODE_DYNAMIC
 	if (wmtwifi_dev && !IS_ERR(wmtwifi_dev)) {
