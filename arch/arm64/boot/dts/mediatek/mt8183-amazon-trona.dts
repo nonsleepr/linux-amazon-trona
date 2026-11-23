@@ -270,6 +270,29 @@
 			pwm_config = <0 1 0 0 0>;
 		};
 	};
+
+	/*
+	 * Trona has no I2S/I2C smart amplifier and no I2C jack-detect chip:
+	 * the speaker is driven from MT6358's own analog headphone/line-out
+	 * stage into a discrete Class-D amplifier controlled purely by two
+	 * GPIOs (enable + a static gain-mode select), and the microphone is
+	 * MT6358's own analog AIN0/AIN2 input pair. "amazon,trona-audio" is
+	 * this board's machine driver, not an upstream binding (see
+	 * sound/soc/mediatek/mt8183/mt8183-mt6358-trona.c). GPIO numbers,
+	 * polarity and the amplifier's enable timing come from a
+	 * third-party mainline port of this exact tablet
+	 * (Cesarus85/omarchy-amazon-fire-hd10), itself sourced from the
+	 * shipped Amazon Trona device tree and mtk-auddrv-gpio.c; both
+	 * GPIOs read back unclaimed on the live device.
+	 */
+	sound: sound {
+		compatible = "amazon,trona-audio";
+		mediatek,platform = <&afe>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&speaker_amp_pins>;
+		speaker-enable-gpios = <&pio 151 GPIO_ACTIVE_HIGH>;
+		speaker-gain-gpios = <&pio 150 GPIO_ACTIVE_HIGH>;
+	};
 };
 
 /*
@@ -278,6 +301,17 @@
  */
 &{/timer} {
 	clock-frequency = <13000000>;
+};
+
+/*
+ * MTKAIF 3.0: the digital link between the AFE and MT6358's own ADC/DAC.
+ * Same eight pins as every other MT8183 board (e.g. mt8183-kukui.dtsi's
+ * aud_pins_default); &afe and &mt6358codec themselves need no status
+ * override, they default to "okay" via mt8183.dtsi/mt6358.dtsi.
+ */
+&afe {
+	pinctrl-names = "default";
+	pinctrl-0 = <&audio_pins>;
 };
 
 /*
@@ -379,6 +413,24 @@
 		touchscreen-size-x = <1200>;
 		touchscreen-size-y = <1920>;
 	};
+};
+
+/*
+ * Accelerometer/ALS/proximity bus. The vendor DT is dual-sourced here:
+ * either a Bosch BMA255 (bosch,bma255 @ 0x19) or a Sensortek STK8BA50
+ * (sensortek,stk8ba50 @ 0x18) is populated, and nothing in the DT or
+ * kernel strings distinguishes which chip this particular unit has - see
+ * research/accelerometer.md. The accelerometer child node is deliberately
+ * NOT added yet: guessing the wrong compatible would just fail to probe
+ * silently. Bus is enabled so a future `i2cdetect -y 1` can disambiguate;
+ * CONFIG_BMC150_ACCEL and CONFIG_STK8BA50 are both built as modules so
+ * whichever address ACKs can be verified immediately with modprobe,
+ * without a rebuild. Add the matching accelerometer@18/@19 node once a
+ * live probe confirms which chip is present.
+ */
+&i2c1 {
+	clock-frequency = <400000>;
+	status = "okay";
 };
 
 /*
@@ -527,6 +579,11 @@
 	status = "okay";
 };
 
+/* AVDD for the codec's own analog output stage (the speaker/HP path). */
+&mt6358codec {
+	Avdd-supply = <&mt6358_vaud28_reg>;
+};
+
 /*
  * LPDDR4X VDDQ (as on kukui). Unclaimed, it was switched off by the
  * regulator late cleanup 30 s after boot, and the system died with it.
@@ -567,6 +624,25 @@
 };
 
 &pio {
+	/*
+	 * MTKAIF 3.0 bus between the AFE and MT6358's own ADC/DAC, same
+	 * pins/function/drive-strength as every other MT8183 board.
+	 */
+	audio_pins: audio-pins {
+		pins-bus {
+			pinmux = <PINMUX_GPIO136__FUNC_AUD_CLK_MOSI>,
+				 <PINMUX_GPIO137__FUNC_AUD_SYNC_MOSI>,
+				 <PINMUX_GPIO138__FUNC_AUD_DAT_MOSI0>,
+				 <PINMUX_GPIO139__FUNC_AUD_DAT_MOSI1>,
+				 <PINMUX_GPIO140__FUNC_AUD_CLK_MISO>,
+				 <PINMUX_GPIO141__FUNC_AUD_SYNC_MISO>,
+				 <PINMUX_GPIO142__FUNC_AUD_DAT_MISO0>,
+				 <PINMUX_GPIO143__FUNC_AUD_DAT_MISO1>;
+			drive-strength = <MTK_DRIVE_4mA>;
+			bias-disable;
+		};
+	};
+
 	/*
 	 * GPIO113..121 are the CONSYS's lines to the MT6631 RF chip; they are
 	 * only handed to it while it is powered. GPIO156 selects the WiFi
@@ -718,6 +794,20 @@
 			pinmux = <PINMUX_GPIO45__FUNC_GPIO45>,
 				 <PINMUX_GPIO2__FUNC_GPIO2>;
 			output-high;
+		};
+	};
+
+	/*
+	 * Discrete Class-D speaker amplifier downstream of MT6358's analog
+	 * headphone output: GPIO151 is its enable, GPIO150 selects its
+	 * (fixed) gain mode. Both come up low (amplifier off) until the
+	 * machine driver's DAPM speaker widget turns them on.
+	 */
+	speaker_amp_pins: speaker-amp-pins {
+		pins-amp {
+			pinmux = <PINMUX_GPIO150__FUNC_GPIO150>,
+				 <PINMUX_GPIO151__FUNC_GPIO151>;
+			output-low;
 		};
 	};
 
