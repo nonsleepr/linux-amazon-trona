@@ -382,6 +382,24 @@
 };
 
 /*
+ * Accelerometer/ALS/proximity bus. The vendor DT is dual-sourced here:
+ * either a Bosch BMA255 (bosch,bma255 @ 0x19) or a Sensortek STK8BA50
+ * (sensortek,stk8ba50 @ 0x18) is populated, and nothing in the DT or
+ * kernel strings distinguishes which chip this particular unit has - see
+ * research/accelerometer.md. The accelerometer child node is deliberately
+ * NOT added yet: guessing the wrong compatible would just fail to probe
+ * silently. Bus is enabled so a future `i2cdetect -y 1` can disambiguate;
+ * CONFIG_BMC150_ACCEL and CONFIG_STK8BA50 are both built as modules so
+ * whichever address ACKs can be verified immediately with modprobe,
+ * without a rebuild. Add the matching accelerometer@18/@19 node once a
+ * live probe confirms which chip is present.
+ */
+&i2c1 {
+	clock-frequency = <400000>;
+	status = "okay";
+};
+
+/*
  * Volume keys, wired as "direct keys": KPCOL0/KPCOL1 against row 0, which
  * is a GPIO held low rather than KPROW0 (as LK sets it up). The MT6358
  * power key is reported by mtk-pmic-keys.
