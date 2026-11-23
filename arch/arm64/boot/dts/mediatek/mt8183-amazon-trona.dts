@@ -168,6 +168,43 @@
 	};
 
 	/*
+	 * The battery's NTC, on the PMIC's BAT_TEMP input: the vendor's 47 kOhm
+	 * table (BAT_NTC_47), with its 90 kOhm pull-up to VBIF28 (2.8 V). The
+	 * lookup values are what the AUXADC's IIO channel reports once scaled:
+	 * mV * 4096, as the scale leaves out the division by the 12 bit range.
+	 * The vendor also corrects for the drop over the sense resistor and
+	 * the flex, ~85 mOhm: a degree or two at 0.5 A, which isn't done here.
+	 */
+	battery_ntc: thermal-sensor-battery {
+		compatible = "generic-adc-thermal";
+		#thermal-sensor-cells = <0>;
+		#io-channel-cells = <0>;
+		io-channels = <&pmic_adc MT6358_AUXADC_BAT_TEMP>;
+		io-channel-names = "sensor-channel";
+		temperature-lookup-table = <(-40000) 10907191
+						(-35000) 10695870
+						(-30000) 10424584
+						(-25000) 10084797
+						(-20000) 9670412
+						(-15000) 9179364
+						(-10000) 8615052
+						(-5000) 7987111
+						0 7310324
+						5000 6605911
+						10000 5896221
+						15000 5202838
+						20000 4544358
+						25000 3934552
+						30000 3382246
+						35000 2891075
+						40000 2461182
+						45000 2089329
+						50000 1770755
+						55000 1499687
+						60000 1270282>;
+	};
+
+	/*
 	 * The preloader's efuse copy, which LK passes in /chosen. The efuse
 	 * block itself reads back as zeros from Linux, so calibration data
 	 * has to come from here. Cells are by devinfo index (offset 4 * n).
@@ -825,8 +862,8 @@
 
 	fuel-gauge {
 		compatible = "mediatek,mt6358-gauge";
-		io-channels = <&pmic_adc MT6358_AUXADC_BATADC>;
-		io-channel-names = "vbat";
+		io-channels = <&pmic_adc MT6358_AUXADC_BATADC>, <&battery_ntc>;
+		io-channel-names = "vbat", "temp";
 		monitored-battery = <&battery>;
 		power-supplies = <&mt6370_charger>;
 	};
@@ -1019,6 +1056,20 @@
  */
 &thermal {
 	nvmem-cells = <&lk_thermal_calibration>;
+};
+
+/* No trips: nothing acts on the battery temperature yet, it is only reported */
+&thermal_zones {
+	battery-thermal {
+		polling-delay = <0>;
+		polling-delay-passive = <0>;
+		thermal-sensors = <&battery_ntc>;
+	};
+};
+
+/* The battery's NTC divider is pulled up to it */
+&mt6358_vbif28_reg {
+	regulator-always-on;
 };
 
 /*
