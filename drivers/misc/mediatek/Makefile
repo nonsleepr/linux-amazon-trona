@@ -10,8 +10,10 @@ subdir-ccflags-y += -Wno-unused-variable -Wno-unused-function
 subdir-ccflags-y += -Wno-enum-conversion
 # ...and for kernels without kCFI: a function called through a pointer of
 # another type is a crash here, so have the compiler point every cast out.
-subdir-ccflags-y += -Wcast-function-type-strict
-subdir-ccflags-y += -Wincompatible-function-pointer-types-strict
+# Clang-only warnings (GCC has no equivalent) - guard with cc-option so a
+# GCC cross build doesn't hard-fail on an unrecognized flag.
+subdir-ccflags-y += $(call cc-option,-Wcast-function-type-strict)
+subdir-ccflags-y += $(call cc-option,-Wincompatible-function-pointer-types-strict)
 
 obj-$(CONFIG_MTK_BTIF)	+= btif/
 obj-$(CONFIG_MTK_COMBO)	+= connectivity/
