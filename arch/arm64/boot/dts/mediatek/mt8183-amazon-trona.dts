@@ -382,21 +382,39 @@
 };
 
 /*
- * Accelerometer/ALS/proximity bus. The vendor DT is dual-sourced here:
- * either a Bosch BMA255 (bosch,bma255 @ 0x19) or a Sensortek STK8BA50
- * (sensortek,stk8ba50 @ 0x18) is populated, and nothing in the DT or
- * kernel strings distinguishes which chip this particular unit has - see
- * research/accelerometer.md. The accelerometer child node is deliberately
- * NOT added yet: guessing the wrong compatible would just fail to probe
- * silently. Bus is enabled so a future `i2cdetect -y 1` can disambiguate;
- * CONFIG_BMC150_ACCEL and CONFIG_STK8BA50 are both built as modules so
- * whichever address ACKs can be verified immediately with modprobe,
- * without a rebuild. Add the matching accelerometer@18/@19 node once a
- * live probe confirms which chip is present.
+ * Accelerometer/ALS bus. The vendor DT lists four possible children here,
+ * as two dual-sourced pairs (see research/accelerometer.md):
+ *
+ *   - ALS:           stk3x1x@48 (Sensortek) or ltrx130a@53 (Lite-On)
+ *   - accelerometer: bma2xx@19 (Bosch BMA255) or stk8baxx@18 (Sensortek
+ *                    STK8BA50)
+ *
+ * The ALS is the Lite-On part at 0x53: its registers match the LTR-F216A
+ * map and reset defaults (PART_ID 0xb1, ALS_MEAS_RES 0x22, ALS_GAIN 0x01,
+ * thresholds 0xfffff/0).
+ *
+ * The accelerometer is NOT identified yet. The first `i2cdetect -y 1` could
+ * not test 0x18/0x19/0x27: this bus has no SMBus Quick support
+ * (I2C_AQ_NO_ZERO_LEN), and i2cdetect's auto mode skips every address
+ * outside 0x30-0x37 and 0x50-0x5f in that case. A node is added once
+ * `i2cdetect -y -r 1` or a direct read shows which address answers.
  */
 &i2c1 {
 	clock-frequency = <400000>;
 	status = "okay";
+
+	/*
+	 * Lite-On ALS, called "ltrx130a" by the vendor driver. Mainline has no
+	 * liteon,ltrx130a entry, but the vendor register offsets are identical
+	 * to LTR-F216A and the live PART_ID reads 0xb1, so ltrf216a.c binds.
+	 * Its lux_multiplier (45) is for LTR-F216A; the vendor driver also
+	 * applies a window factor and idme calibration, so absolute lux is
+	 * unverified.
+	 */
+	light-sensor@53 {
+		compatible = "liteon,ltrf216a";
+		reg = <0x53>;
+	};
 };
 
 /*
