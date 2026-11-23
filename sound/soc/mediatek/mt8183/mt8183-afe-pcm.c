@@ -708,6 +708,17 @@ static int mt8183_afe_runtime_resume(struct device *dev)
 	struct mt8183_afe_private *afe_priv = afe->platform_priv;
 	int ret;
 
+	/*
+	 * The audiosys clock gates (AUDIO_TOP_CON0/1) are volatile registers
+	 * in this same regmap, so while it is cache-only every gate write done
+	 * by the clock framework is silently dropped and the AFE/I2S gates
+	 * stay closed after the probe-time suspend left them that way (DL1
+	 * memif pointer never advances, no IRQs). Leave cache-only mode
+	 * before the clocks are enabled.
+	 */
+	if (afe->regmap && !afe_priv->pm_runtime_bypass_reg_ctl)
+		regcache_cache_only(afe->regmap, false);
+
 	ret = mt8183_afe_enable_clock(afe);
 	if (ret)
 		return ret;
@@ -715,7 +726,6 @@ static int mt8183_afe_runtime_resume(struct device *dev)
 	if (!afe->regmap || afe_priv->pm_runtime_bypass_reg_ctl)
 		goto skip_regmap;
 
-	regcache_cache_only(afe->regmap, false);
 	regcache_sync(afe->regmap);
 
 	/* enable audio sys DCM for power saving */
