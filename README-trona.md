@@ -81,20 +81,26 @@ authoritative, up-to-date table. Snapshot as of this writing:
 
 | Hardware | Status |
 |---|---|
-| Display, touchscreen, GPU, eMMC, backlight, RTC, watchdog | Working |
+| Display, touchscreen, GPU (Panfrost, GLES 3.1), eMMC, backlight, RTC, watchdog | Working; glmark2 smooth, Firefox WebGL on the GPU |
 | USB (gadget/peripheral only, no OTG) | Working |
-| Wi-Fi (MT6630/MT6631 CONSYS) | **Working**, confirmed live (real AP scan) |
-| Buttons (power + volume) | **Working**, confirmed live |
-| Battery/charging (MT6358 gauge + MT6370 charger) | **Working**, confirmed live (capped at 500mA — see Type-C note below) |
-| Audio (MT6358 ADDA + 2-GPIO speaker amp) | Driver built, DT wired, **not yet tested live** |
-| Accelerometer | `i2c1` enabled; live probe found neither predicted candidate chip — bus device identity still being pinned down |
-| Bluetooth (same combo chip) | New HCI glue driver in progress (`bt-wmt-hci` branch) — the chip's power-on path works, but no adaptor existed in-tree at all before this |
-| Type-C/USB-PD charging (MT6370 TCPC) | In progress (`typec-mt6370-tcpc` branch) — fixes the 500mA charging ceiling without touching the USB gadget's peripheral mode |
-| Camera | **Not feasible** — no MediaTek camera-capture driver has ever existed in mainline for any MT8183 device; see `camera.md` |
-| MicroSD slot, ALS/proximity sensor, vibration motor | Not yet investigated |
+| Wi-Fi (MT6630/MT6631 CONSYS) | **Working**, 5 GHz, autoconnects via NetworkManager |
+| Buttons (power + volume) | **Working** |
+| Battery/charger reporting (MT6358 gauge + MT6370 charger) | **Working**; charging current is whatever the source gives (500 mA on a PC port) |
+| Audio (MT6358 ADDA + 2-GPIO speaker amp) | Sound card registers; **audible output not yet tested** |
+| Accelerometer (STK8BA5x at 0x18) and light sensor (Lite-On at 0x53) | Nodes committed on `accel-buttons`; **not yet on the tablet** |
+| Bluetooth | Driver on `bt-wmt-hci` (vendor init, IDME address); **not yet on the tablet**, untested |
+| Type-C (MT6370 TCPC, sink-only) | On `typec-mt6370-tcpc`; **not yet on the tablet**. It does not change the charging limit by itself |
+| Suspend | **Not working yet**: `MT8183_SPM_SUSPEND` is off, deep suspend never exercised |
+| Idle power, thermal sensor | **Open**: `cpuidle.off=1`, no thermal zones; being worked on (`power-idle`, `thermal-gauge`) |
+| Camera | **Not feasible** - no MediaTek camera-capture driver exists upstream for MT8183; see `camera.md` |
+| MicroSD slot, vibration motor | Not yet investigated |
 
 ## Branches
 
-- `device-amazon-trona` — main integration branch (this one).
-- `wifi-consys`, `audio-adda`, `accel-buttons` — merged into `device-amazon-trona` already.
-- `bt-wmt-hci`, `typec-mt6370-tcpc` — active feature branches, not yet merged (work in progress, build-validated but not live-tested as of this writing).
+- `device-amazon-trona` - main integration branch (this one).
+- `wifi-consys`, `audio-adda` - merged. `accel-buttons` is merged up to the
+  i2c1 enablement; its later light-sensor and accelerometer nodes are not.
+- Not merged yet, all build-validated: `bt-wmt-hci`, `typec-mt6370-tcpc`,
+  `accel-buttons` (later commits), `power-idle`, `thermal-gauge`.
+- The next flashed kernel should merge all of them and fix the boot script
+  (a leftover `/init` subshell spins at ~50% of a core after `switch_root`).
