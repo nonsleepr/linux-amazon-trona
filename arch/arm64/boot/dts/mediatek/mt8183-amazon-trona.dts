@@ -3,11 +3,12 @@
  * Amazon Fire HD 10 (11th Gen, 2021) - "trona"
  *
  * Initial bring-up: SoC, PMIC, eMMC, USB peripheral, GPU, touchscreen,
- * keys, the MT6358 fuel gauge, the MT6370 backlight, and the display: LK's
+ * keys, the MT6358 fuel gauge, the MT6370 backlight/charger/Type-C (the
+ * TCPC is sink-only for now, see &ssusb), and the display: LK's
  * framebuffer as a simple-framebuffer until mediatek-drm takes the FT8201AB
- * DSI panel over. The rest of the MT6370 (charger/Type-C) and audio are
- * not described yet. WiFi is the SoC's own connectivity subsystem (CONSYS)
- * with an MT6631 RF chip, driven by MediaTek's vendor stack.
+ * DSI panel over. Audio is not described yet. WiFi is the SoC's own
+ * connectivity subsystem (CONSYS) with an MT6631 RF chip, driven by
+ * MediaTek's vendor stack.
  */
 
 /dts-v1/;
@@ -17,6 +18,7 @@
 #include <dt-bindings/gpio/gpio.h>
 #include <dt-bindings/iio/adc/mediatek,mt6358-auxadc.h>
 #include <dt-bindings/iio/adc/mediatek,mt6370_adc.h>
+#include <dt-bindings/usb/pd.h>
 
 / {
 	model = "Amazon Fire HD 10 (11th Gen)";
@@ -487,11 +489,11 @@
 			default-brightness = <512>;
 		};
 
-		/* Not brought up yet; keep their drivers off the hardware. */
 		/*
 		 * Charge settings come from the battery node; the input
-		 * current limit follows the BC1.2 result. The USB PHY is
-		 * switched off D+/D- while BC1.2 runs.
+		 * current limit follows the BC1.2 result, and now also the
+		 * TCPC's Type-C/PD current advertisement below.  The USB
+		 * PHY is switched off D+/D- while BC1.2 runs.
 		 */
 		mt6370_charger: charger {
 			compatible = "mediatek,mt6370-charger";
@@ -544,9 +546,40 @@
 			};
 		};
 
+		/*
+		 * Sink-only: this just gets the Type-C CC-pin current
+		 * advertisement (and PD, if the source speaks it) seen by
+		 * the kernel, so a real charger stops being capped at the
+		 * USB2.0 SDP default (500 mA). No role switching: &ssusb
+		 * stays "peripheral" (see the comment there) and the TCPC
+		 * connector has no data port/usb-role-switch link, so tcpm
+		 * never tries a data-role swap.
+		 *
+		 * The sink PDO mirrors the vendor PD stack's own primary
+		 * sink capability (pd,sink-pdo-data's first entry in the
+		 * stock DTS decodes to 5 V/2 A) and the battery node's
+		 * constant-charge-current-max-microamp. The vendor stack
+		 * also advertises a second PPS/APDO sink capability for
+		 * fast charging; that's deliberately not replicated here
+		 * (adds variable-voltage PPS negotiation the mainline
+		 * charger driver doesn't drive, for no benefit over the
+		 * fixed 5 V/2 A the hardware already charges at).
+		 */
 		tcpc {
 			compatible = "mediatek,mt6370-tcpc";
-			status = "disabled";
+			interrupts-extended = <&pio 41 IRQ_TYPE_LEVEL_LOW>;
+			pinctrl-names = "default";
+			pinctrl-0 = <&mt6370_tcpc_pins>;
+			status = "okay";
+
+			connector {
+				compatible = "usb-c-connector";
+				label = "USB-C";
+				power-role = "sink";
+				data-role = "device";
+				sink-pdos = <PDO_FIXED(5000, 2000, 0)>;
+				op-sink-microwatt = <10000000>;
+			};
 		};
 	};
 };
@@ -788,6 +821,22 @@
 		};
 	};
 
+	/*
+	 * The MT6370's Type-C/PD block has its own IRQB, separate from the
+	 * chip's main interrupt line above: the vendor DT's "type_c_port0"
+	 * node wires it to GPIO41 (mt6370pd,intr_gpio_num = <0x29>), not
+	 * GPIO10. Same open-drain IRQB story is assumed here (no separate
+	 * vendor GPIO table entry found for this pin to confirm the pull
+	 * direction), so it's biased the same way as the main IRQ above.
+	 */
+	mt6370_tcpc_pins: mt6370-tcpc-pins {
+		pins-irq {
+			pinmux = <PINMUX_GPIO41__FUNC_GPIO41>;
+			input-enable;
+			bias-pull-up;
+		};
+	};
+
 	/* LK leaves both resets deasserted (high) with the panel running. */
 	panel_pins: panel-pins {
 		pins-reset {
@@ -977,8 +1026,12 @@
 };
 
 /*
- * Peripheral-only until the MT6370 TCPC is described and can drive role
- * switching. USB 2.0 only on this device.
+ * Peripheral-only. The MT6370 TCPC is now described (see &i2c11's "tcpc"
+ * subnode) but deliberately only as a sink: this port is the sole
+ * console/debug/flashing transport for this whole device right now, so
+ * role switching (dr_mode = "otg", a usb-role-switch link to the TCPC's
+ * connector) is left for a follow-up pass instead of risking a regression
+ * here. USB 2.0 only on this device either way (no SuperSpeed PHY wired).
  *
  * VBUS doesn't reach the PHY's comparator (the MT6370 senses it), so the
  * device controller forces VBUS valid itself, and drops that across system
