@@ -82,16 +82,13 @@ config MTK_COMBO_BT
 	depends on MTK_COMBO && BT && m
 	help
 	  Registers a Bluetooth hci_dev with the kernel's Bluetooth core and
-	  switches the BT function on through the WMT core, the same way
-	  MTK_COMBO_WIFI's wmt_chrdev_wifi switches WiFi on. HCI commands,
-	  events, ACL and SCO packets are framed over the WMT core's STP
-	  transport, the shared BTIF-based channel the WiFi, FM and GPS
-	  functions' control traffic also uses.
+	  switches the BT function on through the WMT core, the way
+	  MTK_COMBO_WIFI's wmt_chrdev_wifi does for WiFi. HCI packets are
+	  H:4 framed in the BT channel of the WMT core's STP transport, and
+	  the controller gets the vendor's init commands (BD address from
+	  the IDME /idme/bt_mac_addr node, radio, TX power, sleep) on open.
 
-	  This replaces mtk_wcn_stpbt_drv_init(), a weak stub in the vendor
-	  chip-detection code (common_detect/drv_init/bluetooth_drv_init.c)
-	  that was gated on this same symbol name without the symbol, or any
-	  real driver behind it, ever existing in this tree.
+	  SCO audio is not routed: MediaTek combo chips carry it outside HCI.
 
 	  The module is called btmtk_stp.
 

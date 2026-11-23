@@ -21,27 +21,15 @@
 #include "bluetooth_drv_init.h"
 
 /*
- * This legacy per-chip "driver init" dispatch (do_connectivity_driver_init()
- * in conn_drv_init.c, which called do_bluetooth_drv_init() below) is dead
- * code in this tree: do_connectivity_driver_init() only exists under
- * "#if (MTK_WCN_REMOVE_KO)", which is only ever 1 if something defines
- * MTK_WCN_REMOVE_KERNEL_MODULE, and nothing in this kernel's build does -
- * see wmt_detect.c's own "#if (MTK_WCN_REMOVE_KO)" guard around its only
- * call site. So this function has never been reachable.
- *
- * It used to also carry a mtk_wcn_stpbt_drv_init() weak stub behind
- * "#ifdef CONFIG_MTK_COMBO_BT" - a symbol that, before the MTK_COMBO_BT
- * Kconfig option and the real driver in bt/adaptor/btmtk_stp.c, didn't
- * exist anywhere in this tree's Kconfig either, so the stub could never
- * even compile in. Now that CONFIG_MTK_COMBO_BT is a real, selectable
- * option, that guard would start compiling the dead stub back in next to
- * the real driver, which would be confusing for no benefit (this hook is
- * still never called); it's removed instead. The real BT driver does not
- * use this hook - like WiFi's wmt_cdev_wifi.c, it is a standalone module
- * that powers its function on itself, via mtk_wcn_wmt_func_on().
+ * The vendor's per-chip driver init hook (conn_drv_init.c, only built with
+ * MTK_WCN_REMOVE_KO, which nothing here defines) called a weak
+ * mtk_wcn_stpbt_drv_init() stub for the BT adaptor, behind a CONFIG_MTK_COMBO_BT
+ * that did not exist. That option is now the HCI driver in bt/adaptor/, a module
+ * that switches BT on by itself like wmt_cdev_wifi.c does for WiFi, so there is
+ * nothing for this hook to call.
  */
 int do_bluetooth_drv_init(int chip_id)
 {
-	WMT_DETECT_PR_INFO("do_bluetooth_drv_init is dead code, see comment; not used\n");
-	return 0;
+	WMT_DETECT_PR_INFO("BT driver init is not done from here\n");
+	return -1;
 }
