@@ -769,7 +769,13 @@ WLAN_STATUS kalRxIndicateOnePkt(IN P_GLUE_INFO_T prGlueInfo, IN PVOID pvPkt)
 		DBGLOG_MEM32(RX, ERROR, (PUINT_32) prSkb->data, prSkb->len);
 	}
 	glIndicateWoWPacket(prSkb);
+#if CFG_RX_PATH_DBG
+	RX_DBG_INC(u4NetifRx);
+	if (netif_rx(prSkb) != NET_RX_SUCCESS)	/* any context */
+		RX_DBG_INC(u4NetifRxDrop);
+#else
 	netif_rx(prSkb);	/* any context */
+#endif
 	wlanReturnPacket(prGlueInfo->prAdapter, NULL);
 
 	return WLAN_STATUS_SUCCESS;
@@ -2531,6 +2537,10 @@ int hif_thread(void *data)
 	struct net_device *dev = data;
 	P_GLUE_INFO_T prGlueInfo = *((P_GLUE_INFO_T *) netdev_priv(dev));
 	int ret = 0;
+#if CFG_RX_PATH_DBG
+	UINT_64 u8DbgIsrNs = 0, u8DbgThreadNs = 0;
+	BOOLEAN fgDbgInt = FALSE;
+#endif
 
 	KAL_WAKELOCK_DECLARE(rHifThreadWakeLock);
 	KAL_WAKE_LOCK_INIT(prGlueInfo->prAdapter, &rHifThreadWakeLock, "WLAN hif_thread");
@@ -2569,6 +2579,12 @@ int hif_thread(void *data)
 		if (!KAL_WAKE_LOCK_ACTIVE(prGlueInfo->prAdapter, &rHifThreadWakeLock))
 			KAL_WAKE_LOCK(prGlueInfo->prAdapter, &rHifThreadWakeLock);
 
+#if CFG_RX_PATH_DBG
+		/* the interrupt is masked until this thread enables it again: the time is the one of this cycle */
+		u8DbgThreadNs = sched_clock();
+		u8DbgIsrNs = prGlueInfo->u8HifIntTime;
+		fgDbgInt = FALSE;
+#endif
 		wlanAcquirePowerControl(prGlueInfo->prAdapter);
 
 		/* Handle Interrupt */
@@ -2583,6 +2599,9 @@ int hif_thread(void *data)
 				DBGLOG(INIT, INFO, "ignore pending interrupt\n");
 			} else {
 				/* DBGLOG(INIT, INFO, ("HIF Interrupt!\n")); */
+#if CFG_RX_PATH_DBG
+				fgDbgInt = TRUE;
+#endif
 				prGlueInfo->TaskIsrCnt++;
 				wlanIST(prGlueInfo->prAdapter);
 			}
@@ -2616,6 +2635,10 @@ int hif_thread(void *data)
 		wlanReleasePowerControl(prGlueInfo->prAdapter);
 #if defined(MT6631)
 		nicEnableInterrupt(prGlueInfo->prAdapter);
+#endif
+#if CFG_RX_PATH_DBG
+		if (fgDbgInt)
+			nicRxDbgHifCycle(u8DbgIsrNs, u8DbgThreadNs, sched_clock());
 #endif
 	}
 

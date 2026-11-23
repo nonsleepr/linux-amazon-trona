@@ -209,6 +209,224 @@ static const struct ACTION_FRAME_SIZE_MAP arActionFrameReservedLen[] = {
 *                              F U N C T I O N S
 ********************************************************************************
 */
+#if CFG_RX_PATH_DBG
+struct RX_PATH_DBG_T g_rRxDbg;
+
+/* The window of a BA session was moved from u2From to u2To: what is missing in between is given up on */
+VOID nicRxDbgSkipSn(UINT_8 ucTid, UINT_16 u2From, UINT_16 u2To)
+{
+	UINT_32 u4Dist = RX_DBG_SN_DIST(u2From % RX_DBG_SN_NUM, u2To % RX_DBG_SN_NUM);
+	UINT_16 u2Sn = u2From % RX_DBG_SN_NUM;
+
+	if (ucTid >= CFG_RX_MAX_BA_TID_NUM)
+		return;
+
+	for (; u4Dist; u4Dist--) {
+		g_rRxDbg.aucSkipped[ucTid][u2Sn / 8] |= BIT(u2Sn % 8);
+		u2Sn = (u2Sn + 1) % RX_DBG_SN_NUM;
+	}
+}
+
+/* A frame with this number is taken: no late arrival of it can follow */
+VOID nicRxDbgAcceptSn(UINT_8 ucTid, UINT_16 u2Sn)
+{
+	if (ucTid < CFG_RX_MAX_BA_TID_NUM && u2Sn < RX_DBG_SN_NUM)
+		g_rRxDbg.aucSkipped[ucTid][u2Sn / 8] &= ~BIT(u2Sn % 8);
+}
+
+BOOLEAN nicRxDbgTestAndClearSkippedSn(UINT_8 ucTid, UINT_16 u2Sn)
+{
+	BOOLEAN fgSkipped;
+
+	if (ucTid >= CFG_RX_MAX_BA_TID_NUM || u2Sn >= RX_DBG_SN_NUM)
+		return FALSE;
+
+	fgSkipped = (g_rRxDbg.aucSkipped[ucTid][u2Sn / 8] & BIT(u2Sn % 8)) ? TRUE : FALSE;
+	g_rRxDbg.aucSkipped[ucTid][u2Sn / 8] &= ~BIT(u2Sn % 8);
+
+	return fgSkipped;
+}
+
+/* One interrupt served by hif_thread: the three times are of sched_clock() */
+VOID nicRxDbgHifCycle(UINT_64 u8IsrNs, UINT_64 u8ThreadNs, UINT_64 u8DoneNs)
+{
+	UINT_32 u4Us;
+
+	g_rRxDbg.u4HifCycle++;
+
+	if (u8ThreadNs > u8IsrNs) {
+		g_rRxDbg.u8IsrToThreadNs += u8ThreadNs - u8IsrNs;
+		u4Us = (UINT_32) div_u64(u8ThreadNs - u8IsrNs, NSEC_PER_USEC);
+		RX_DBG_MAX(u4IsrToThreadMaxUs, u4Us);
+		g_rRxDbg.au4IsrToThreadHist[u4Us < 250 ? 0 : u4Us < 1000 ? 1 : u4Us < 4000 ? 2 : u4Us < 16000 ? 3 : 4]++;
+	}
+
+	g_rRxDbg.u8CycleNs += u8DoneNs - u8ThreadNs;
+	u4Us = (UINT_32) div_u64(u8DoneNs - u8ThreadNs, NSEC_PER_USEC);
+	RX_DBG_MAX(u4CycleMaxUs, u4Us);
+}
+
+static UINT_32 nicRxDbgAvgUs(UINT_64 u8SumNs, UINT_32 u4Num)
+{
+	return u4Num ? (UINT_32) div_u64(div_u64(u8SumNs, NSEC_PER_USEC), u4Num) : 0;
+}
+
+/* The data frame that nicRxFillRFB() has just parsed */
+static VOID nicRxDbgDataFrame(IN P_SW_RFB_T prSwRfb)
+{
+	struct RX_PATH_DBG_T *prDbg = &g_rRxDbg;
+	UINT_32 u4Rxv0, u4Mode, u4Rate;
+
+	prDbg->u4Data++;
+	prDbg->au4PayloadFmt[prSwRfb->ucPayloadFormat & 3]++;
+
+	/* frames per RX vector, which is to say per PPDU */
+	if (prSwRfb->ucRxvSeqNo == prDbg->ucLastRxv && prDbg->u4PpduRun) {
+		prDbg->u4PpduRun++;
+	} else {
+		UINT_32 u4Run = prDbg->u4PpduRun;
+
+		if (u4Run)
+			prDbg->au4PpduHist[u4Run == 1 ? 0 : u4Run == 2 ? 1 : u4Run <= 4 ? 2 : u4Run <= 8 ? 3 :
+					   u4Run <= 16 ? 4 : u4Run <= 32 ? 5 : 6]++;
+		prDbg->ucLastRxv = prSwRfb->ucRxvSeqNo;
+		prDbg->u4PpduRun = 1;
+	}
+
+	if (prSwRfb->fgHdrTran && (prSwRfb->ucGroupVLD & BIT(RX_GROUP_VLD_4)) && prSwRfb->prRxStatusGroup4 &&
+	    !prSwRfb->fgIsBC && !prSwRfb->fgIsMC) {
+		prDbg->u4UcData++;
+		if (HAL_RX_STATUS_GET_FRAME_CTL_FIELD(prSwRfb->prRxStatusGroup4) & MASK_FC_RETRY)
+			prDbg->u4Retry++;
+	}
+
+	if ((prSwRfb->ucGroupVLD & BIT(RX_GROUP_VLD_3)) && prSwRfb->prRxStatusGroup3) {
+		u4Rxv0 = prSwRfb->prRxStatusGroup3->u4RxVector[0];
+		u4Mode = (u4Rxv0 & RX_VT_RX_MODE_MASK) >> RX_VT_RX_MODE_OFFSET;
+		if (u4Mode <= RX_VT_VHT_MODE)
+			prDbg->au4RxMode[u4Mode]++;
+		if (u4Mode >= RX_VT_MIXED_MODE && u4Mode <= RX_VT_VHT_MODE) {
+			/* one spatial stream: HT MCS 0 to 7, VHT MCS 0 to 9 */
+			u4Rate = (u4Mode == RX_VT_VHT_MODE) ? (u4Rxv0 & RX_VT_RX_RATE_AC_MASK) :
+							      (u4Rxv0 & RX_VT_RX_RATE_MASK);
+			prDbg->au4Mcs[u4Rate > 9 ? 9 : u4Rate]++;
+			prDbg->au4Bw[(u4Rxv0 & RX_VT_FR_MODE_MASK) >> RX_VT_FR_MODE_OFFSET]++;
+			if (u4Rxv0 & RX_VT_SHORT_GI)
+				prDbg->u4Sgi++;
+		}
+	}
+}
+
+/* A frame of a BA session goes to the network stack: do the numbers follow each other? */
+static VOID nicRxDbgDeliver(IN P_SW_RFB_T prSwRfb)
+{
+	struct RX_PATH_DBG_T *prDbg = &g_rRxDbg;
+	UINT_8 ucTid = prSwRfb->ucTid;
+	UINT_32 u4Dist;
+
+	if (!prSwRfb->ucDbgSnValid || ucTid >= CFG_RX_MAX_BA_TID_NUM)
+		return;
+
+	if (prDbg->afgLastSnValid[ucTid]) {
+		u4Dist = RX_DBG_SN_DIST(prDbg->au2LastSn[ucTid], prSwRfb->u2SSN % RX_DBG_SN_NUM);
+		if (u4Dist == 1) {
+			prDbg->u4SeqOk++;
+		} else if (u4Dist == 0) {
+			prDbg->u4SeqSame++;
+		} else if (u4Dist < RX_DBG_SN_NUM / 2) {
+			prDbg->u4SeqGap++;
+			prDbg->u4SeqGapSn += u4Dist - 1;
+		} else {
+			prDbg->u4SeqBack++;
+			return;	/* the highest number passed up stays the reference */
+		}
+	}
+	prDbg->au2LastSn[ucTid] = prSwRfb->u2SSN % RX_DBG_SN_NUM;
+	prDbg->afgLastSnValid[ucTid] = TRUE;
+}
+
+/*----------------------------------------------------------------------------*/
+/*!
+* @brief Prints the counters of the receive path, and clears them: what is
+*        printed is what happened since they were last read.
+*
+* @param prAdapter      Pointer to the Adapter structure.
+* @param pcBuf          Where to print to
+* @param u4Size         The space there
+*
+* @return the number of characters printed
+*/
+/*----------------------------------------------------------------------------*/
+UINT_32 nicRxDbgDump(IN P_ADAPTER_T prAdapter, OUT PCHAR pcBuf, IN UINT_32 u4Size)
+{
+	struct RX_PATH_DBG_T *d = &g_rRxDbg;
+	P_RX_CTRL_T prRxCtrl = &prAdapter->rRxCtrl;
+	UINT_32 u4IsrCnt = prAdapter->prGlueInfo->IsrCnt;
+	INT_32 i4Pos = 0;
+
+	i4Pos += scnprintf(pcBuf + i4Pos, u4Size - i4Pos,
+			   "--- RX path, since last read ---\n"
+			   "hif: isr %u cycles %u isr2thread avg/max %u/%u us hist<250us,<1ms,<4ms,<16ms,more %u %u %u %u %u\n"
+			   "hif: cycle avg/max %u/%u us drvown %u loops %u fwown %u sleepy %u\n"
+			   "hif: rxreads %u frames %u read avg/max %u/%u us hist1,2,3-4,5-8,9-15,16 %u %u %u %u %u %u\n"
+			   "hif: rfb short %u free min/now %u/%u indicated-list %u\n",
+			   /* the statistics query of cfg80211 clears IsrCnt as well */
+			   u4IsrCnt >= d->u4IsrBase ? u4IsrCnt - d->u4IsrBase : u4IsrCnt, d->u4HifCycle,
+			   nicRxDbgAvgUs(d->u8IsrToThreadNs, d->u4HifCycle), d->u4IsrToThreadMaxUs,
+			   d->au4IsrToThreadHist[0], d->au4IsrToThreadHist[1], d->au4IsrToThreadHist[2],
+			   d->au4IsrToThreadHist[3], d->au4IsrToThreadHist[4],
+			   nicRxDbgAvgUs(d->u8CycleNs, d->u4HifCycle), d->u4CycleMaxUs, d->u4DrvOwn, d->u4DrvOwnLoop, d->u4FwOwn, d->u4Sleepy,
+			   d->u4RxRead, d->u4RxReadPkt,
+			   nicRxDbgAvgUs(d->u8RxReadNs, d->u4RxRead), d->u4RxReadMaxUs,
+			   d->au4RxReadHist[0], d->au4RxReadHist[1], d->au4RxReadHist[2],
+			   d->au4RxReadHist[3], d->au4RxReadHist[4], d->au4RxReadHist[5],
+			   d->u4RfbShort, d->u4FreeRfbMin, prRxCtrl->rFreeSwRfbList.u4NumElem,
+			   prRxCtrl->rIndicatedRfbList.u4NumElem);
+
+	i4Pos += scnprintf(pcBuf + i4Pos, u4Size - i4Pos,
+			   "data: frames %u fmt msdu/last/mid/first %u %u %u %u unicast %u retry-bit %u\n"
+			   "data: flagdrop %u llc-mis %u llc-mis-unicast %u last flag 0x%04x fmt %u len %u\n"
+			   "phy: mode cck/ofdm/ht/htgf/vht %u %u %u %u %u bw20/40/80/160 %u %u %u %u sgi %u\n"
+			   "phy: mcs0-9 %u %u %u %u %u %u %u %u %u %u\n"
+			   "phy: frames/ppdu 1,2,3-4,5-8,9-16,17-32,more %u %u %u %u %u %u %u\n",
+			   d->u4Data, d->au4PayloadFmt[0], d->au4PayloadFmt[1], d->au4PayloadFmt[2],
+			   d->au4PayloadFmt[3], d->u4UcData, d->u4Retry,
+			   d->u4FlagDrop, d->u4LlcMis, d->u4LlcMisUc, d->u2LastDropFlag, d->ucLastDropFmt,
+			   d->u2LastDropLen,
+			   d->au4RxMode[0], d->au4RxMode[1], d->au4RxMode[2], d->au4RxMode[3], d->au4RxMode[4],
+			   d->au4Bw[0], d->au4Bw[1], d->au4Bw[2], d->au4Bw[3], d->u4Sgi,
+			   d->au4Mcs[0], d->au4Mcs[1], d->au4Mcs[2], d->au4Mcs[3], d->au4Mcs[4],
+			   d->au4Mcs[5], d->au4Mcs[6], d->au4Mcs[7], d->au4Mcs[8], d->au4Mcs[9],
+			   d->au4PpduHist[0], d->au4PpduHist[1], d->au4PpduHist[2], d->au4PpduHist[3],
+			   d->au4PpduHist[4], d->au4PpduHist[5], d->au4PpduHist[6]);
+
+	i4Pos += scnprintf(pcBuf + i4Pos, u4Size - i4Pos,
+			   "reorder: in %u noba %u indep %u indepdup %u within %u inorder %u ahead %u(sn %u) qmax %u baparam 0x%04x\n"
+			   "reorder: DROP behind %u (late-after-skip %u amsdu %u) dup-in-queue %u (amsdu %u)\n"
+			   "reorder: misstimeout %u(sn %u) bubble start/expire/flush %u/%u/%u(sn %u) bar %u(sn %u) poplt %u nowait %u fwdrop %u(sn %u)\n"
+			   "deliver: toos %u fail %u seq ok/gap/same/back %u %u %u %u missing-sn %u netif_rx %u dropped %u\n"
+			   "rxctrl (not cleared): mpdu %llu ind %llu drop %llu type %llu class %llu dstnull %llu dup %llu\n",
+			   d->u4Reorder, d->u4NoBa, d->u4Indep, d->u4IndepDup, d->u4Within, d->u4InOrder,
+			   d->u4Ahead, d->u4AheadSn, d->u4ReorderQMax, d->u2BaParam,
+			   d->u4Behind, d->u4BehindLate, d->u4BehindAmsdu, d->u4DupInQue, d->u4DupInQueAmsdu,
+			   d->u4MissTo, d->u4MissToSn, d->u4BubStart, d->u4BubTo, d->u4BubFlush, d->u4BubFlushSn,
+			   d->u4BarMove, d->u4BarSn, d->u4PopLt, d->u4NoWaitAdj, d->u4FwDropEvt, d->u4FwDropSn,
+			   d->u4ToOs, d->u4ToOsFail, d->u4SeqOk, d->u4SeqGap, d->u4SeqSame, d->u4SeqBack,
+			   d->u4SeqGapSn, d->u4NetifRx, d->u4NetifRxDrop,
+			   RX_GET_CNT(prRxCtrl, RX_MPDU_TOTAL_COUNT), RX_GET_CNT(prRxCtrl, RX_DATA_INDICATION_COUNT),
+			   RX_GET_CNT(prRxCtrl, RX_DROP_TOTAL_COUNT), RX_GET_CNT(prRxCtrl, RX_TYPE_ERR_DROP_COUNT),
+			   RX_GET_CNT(prRxCtrl, RX_CLASS_ERR_DROP_COUNT), RX_GET_CNT(prRxCtrl, RX_DST_NULL_DROP_COUNT),
+			   RX_GET_CNT(prRxCtrl, RX_DUP_DROP_COUNT));
+
+	/* all but the state: the threads may be counting meanwhile, which costs a count at most */
+	kalMemZero(d, OFFSET_OF(struct RX_PATH_DBG_T, u2LastDropFlag));
+	d->u4FreeRfbMin = prRxCtrl->rFreeSwRfbList.u4NumElem;
+	d->u4IsrBase = u4IsrCnt;
+
+	return (UINT_32) i4Pos;
+}
+#endif /* CFG_RX_PATH_DBG */
+
 /*----------------------------------------------------------------------------*/
 /*!
 * @brief Initialize the RFBs
@@ -254,6 +472,10 @@ VOID nicRxInitialize(IN P_ADAPTER_T prAdapter)
 
 	/* 4 <2> Clear all RX counters */
 	RX_RESET_ALL_CNTS(prRxCtrl);
+#if CFG_RX_PATH_DBG
+	kalMemZero(&g_rRxDbg, sizeof(g_rRxDbg));
+	g_rRxDbg.u4FreeRfbMin = CFG_RX_MAX_PKT_NUM;
+#endif
 
 #if CFG_SDIO_RX_AGG
 	prRxCtrl->pucRxCoalescingBufPtr = prAdapter->pucCoalescingBufCached;
@@ -1040,9 +1262,14 @@ VOID nicRxProcessPktWithoutReorder(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwR
 			       (UINT_32) prSwRfb->u2PacketLen, fgIsRetained, prSwRfb->aeCSUM) != WLAN_STATUS_SUCCESS) {
 		DBGLOG(RX, ERROR, "kalProcessRxPacket return value != WLAN_STATUS_SUCCESS\n");
 
+		RX_DBG_INC(u4ToOsFail);
 		nicRxReturnRFB(prAdapter, prSwRfb);
 		return;
 	}
+#if CFG_RX_PATH_DBG
+	RX_DBG_INC(u4ToOs);
+	nicRxDbgDeliver(prSwRfb);
+#endif
 
 #if !CFG_SUPPORT_MULTITHREAD
 	prRxCtrl->apvIndPacket[prRxCtrl->ucNumIndPacket] = prSwRfb->pvPacket;
@@ -1546,6 +1773,10 @@ VOID nicRxProcessDataPacket(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb)
 	prSwRfb->fgIsFirstSubAMSDULLCMS = FALSE;
 #endif
 	nicRxFillRFB(prAdapter, prSwRfb);
+#if CFG_RX_PATH_DBG
+	prSwRfb->ucDbgSnValid = FALSE;
+	nicRxDbgDataFrame(prSwRfb);
+#endif
 
 	/* BA session */
 	if ((prRxStatus->u2StatusFlag & RXS_DW2_AMPDU_nERR_BITMAP) == RXS_DW2_AMPDU_nERR_VALUE)
@@ -1633,6 +1864,17 @@ VOID nicRxProcessDataPacket(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb)
 
 	/* if(secCheckClassError(prAdapter, prSwRfb, prStaRec) == TRUE && */
 	if (prAdapter->fgTestMode || fgDrop) {
+#if CFG_RX_PATH_DBG
+		RX_DBG_INC(u4FlagDrop);
+		if (HAL_RX_STATUS_IS_LLC_MIS(prRxStatus)) {
+			RX_DBG_INC(u4LlcMis);
+			if (!prSwRfb->fgIsBC && !prSwRfb->fgIsMC)
+				RX_DBG_INC(u4LlcMisUc);
+		}
+		g_rRxDbg.u2LastDropFlag = prRxStatus->u2StatusFlag;
+		g_rRxDbg.u2LastDropLen = (UINT_16) HAL_RX_STATUS_GET_RX_BYTE_CNT(prRxStatus);
+		g_rRxDbg.ucLastDropFmt = prSwRfb->ucPayloadFormat;
+#endif
 		DBGLOG(RSN, ERROR, "fgTestMode\n");
 		nicRxReturnRFB(prAdapter, prSwRfb);
 		RX_INC_CNT(prRxCtrl, RX_CLASS_ERR_DROP_COUNT);
@@ -2329,6 +2571,7 @@ VOID nicRxProcessEventPacket(IN P_ADAPTER_T prAdapter, IN OUT P_SW_RFB_T prSwRfb
 			/* DBGLOG(RX, INFO, ("ucSleepyState = %d\n", prEventSleepyNotify->ucSleepyState)); */
 
 			prAdapter->fgWiFiInSleepyState = (BOOLEAN) (prEventSleepyNotify->ucSleepyState);
+			RX_DBG_INC(u4Sleepy);
 
 #if CFG_SUPPORT_MULTITHREAD
 			if (prEventSleepyNotify->ucSleepyState)
@@ -3667,8 +3910,13 @@ VOID nicRxSDIOAggReceiveRFBs(IN P_ADAPTER_T prAdapter)
 
 			u4CurrAvailFreeRfbCnt = prRxCtrl->rFreeSwRfbList.u4NumElem;
 
+#if CFG_RX_PATH_DBG
+			if (u4CurrAvailFreeRfbCnt < g_rRxDbg.u4FreeRfbMin)
+				g_rRxDbg.u4FreeRfbMin = u4CurrAvailFreeRfbCnt;
+#endif
 			/* if SwRfb is not enough, abort reading this time */
 			if (u4CurrAvailFreeRfbCnt < (u2RxPktNum + CFG_NUM_OF_BUBBLE_TIMEOUT_EVENT)) {
+				RX_DBG_INC(u4RfbShort);
 #if CFG_HIF_RX_STARVATION_WARNING
 				DbgPrint("FreeRfb is not enough: %d available, need %d\n",
 					 u4CurrAvailFreeRfbCnt, u2RxPktNum);
@@ -3730,12 +3978,29 @@ VOID nicRxSDIOAggReceiveRFBs(IN P_ADAPTER_T prAdapter)
 
 			u4RxAggLength = (CFG_RX_COALESCING_BUFFER_SIZE - u4RxAvailAggLen);
 
+#if CFG_RX_PATH_DBG
+			u8Current = sched_clock();
+#endif
 			HAL_READ_RX_PORT(prAdapter,
 					 rxNum,
 					 u4RxAggLength, prRxCtrl->pucRxCoalescingBufPtr, CFG_RX_COALESCING_BUFFER_SIZE);
 
 			pucSrcAddr = prRxCtrl->pucRxCoalescingBufPtr;
 
+#if CFG_RX_PATH_DBG
+			{
+				UINT_64 u8ReadNs = sched_clock() - u8Current;
+				UINT_32 u4ReadUs = (UINT_32) div_u64(u8ReadNs, NSEC_PER_USEC);
+
+				RX_DBG_INC(u4RxRead);
+				RX_DBG_ADD(u4RxReadPkt, u4RxAggCount);
+				RX_DBG_ADD(u8RxReadNs, u8ReadNs);
+				RX_DBG_MAX(u4RxReadMaxUs, u4ReadUs);
+				g_rRxDbg.au4RxReadHist[u4RxAggCount <= 1 ? 0 : u4RxAggCount == 2 ? 1 :
+						       u4RxAggCount <= 4 ? 2 : u4RxAggCount <= 8 ? 3 :
+						       u4RxAggCount <= 15 ? 4 : 5]++;
+			}
+#endif
 			u8Current = sched_clock();
 
 			for (i = 0; i < u4RxAggCount; i++) {

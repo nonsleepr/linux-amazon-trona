@@ -551,6 +551,14 @@
 
 #define CFG_HIF_STATISTICS                      0
 
+/*
+ * Counters of the receive path, for finding where downlink frames go: the
+ * host interface cycle, the frames of the BA sessions, the reordering and the
+ * hand-over to the network stack. No logging; they are read, and cleared,
+ * through /proc/net/wlan/int_stat, see nicRxDbgDump(). 0 takes all of it out.
+ */
+#define CFG_RX_PATH_DBG                         1
+
 #define CFG_HIF_RX_STARVATION_WARNING           0
 
 #define CFG_RX_PKTS_DUMP                        0

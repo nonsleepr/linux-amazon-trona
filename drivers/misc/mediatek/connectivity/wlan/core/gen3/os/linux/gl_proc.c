@@ -115,7 +115,11 @@ static UINT_8 aucDbModuleName[][PROC_DBG_LEVEL_MAX_DISPLAY_STR_LEN] = {
 	"SAA", "AAA", "P2P", "QM", "SEC", "BOW", "WAPI", "ROAMING", "TDLS", "OID",
 	"NIC", "WNM", "WMM"
 };
+#if CFG_RX_PATH_DBG
+static UINT_8 aucProcBuf[4096];	/* room for nicRxDbgDump() in int_stat */
+#else
 static UINT_8 aucProcBuf[1536];
+#endif
 
 #if FW_CFG_SUPPORT
 static P_GLUE_INFO_T gprGlueInfo;
@@ -1322,6 +1326,14 @@ static ssize_t interrupt_stat_read(struct file *filp,
 					"RX EVENT[0x%0x]:%u\n", i,
 					g_wake_event_count[i]);
 	}
+
+#if CFG_RX_PATH_DBG
+	if (pos < sizeof(aucProcBuf) - 1)
+		pos += nicRxDbgDump(prAdapter, aucProcBuf + pos, sizeof(aucProcBuf) - pos);
+	/* no more than the reader has room for */
+	if (count < sizeof(aucProcBuf))
+		aucProcBuf[count] = '\0';
+#endif
 
 	PROC_READ_COMMON(buf, f_pos, u4CopySize);
 

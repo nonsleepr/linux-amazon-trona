@@ -580,7 +580,130 @@ struct _SW_RFB_T {
 	ENUM_RX_PKT_DESTINATION_T eDst;
 	ENUM_TRAFFIC_CLASS_INDEX_T eTC;	/* only valid when eDst == FORWARD */
 	UINT_64 rIntTime;
+#if CFG_RX_PATH_DBG
+	UINT_8 ucDbgSnValid;	/* u2SSN is the one of a frame that went through the reordering */
+#endif
 };
+
+#if CFG_RX_PATH_DBG
+#define RX_DBG_SN_NUM		4096
+#define RX_DBG_SN_DIST(_from, _to)	(((_to) + RX_DBG_SN_NUM - (_from)) % RX_DBG_SN_NUM)
+
+/*
+ * Counters only, each written by one thread and without locks: a count may be
+ * off by one when it is read. All are cleared when they are read, the "state"
+ * at the end is not.
+ */
+struct RX_PATH_DBG_T {
+	/* host interface: hif_thread */
+	UINT_32 u4HifCycle;		/* interrupts served */
+	UINT_64 u8IsrToThreadNs;	/* interrupt handler to hif_thread running, sum */
+	UINT_32 u4IsrToThreadMaxUs;
+	UINT_32 au4IsrToThreadHist[5];	/* <250us, <1ms, <4ms, <16ms, more */
+	UINT_64 u8CycleNs;		/* hif_thread running to interrupt enabled again, sum */
+	UINT_32 u4CycleMaxUs;
+	UINT_32 u4RxRead;		/* reads of an RX port */
+	UINT_32 u4RxReadPkt;		/* frames in them */
+	UINT_32 au4RxReadHist[6];	/* frames per read: 1, 2, 3-4, 5-8, 9-15, 16 */
+	UINT_64 u8RxReadNs;		/* time in the reads, sum */
+	UINT_32 u4RxReadMaxUs;
+	UINT_32 u4RfbShort;		/* reads put off for want of free SW RFBs */
+	UINT_32 u4FreeRfbMin;
+	UINT_32 u4DrvOwn;		/* ownership taken back from the firmware */
+	UINT_32 u4DrvOwnLoop;		/* waits of 0.9 to 1 ms that took */
+	UINT_32 u4FwOwn;		/* ownership given to the firmware */
+	UINT_32 u4Sleepy;		/* sleepy events of the firmware */
+
+	/* data frames as they come from the host interface: main thread */
+	UINT_32 u4Data;
+	UINT_32 au4PayloadFmt[4];	/* MSDU, last, middle, first A-MSDU subframe */
+	UINT_32 u4UcData;		/* unicast, header translated */
+	UINT_32 u4Retry;		/* of those, with the retry bit */
+	UINT_32 u4FlagDrop;		/* dropped for the RX status flags or cipher mismatch */
+	UINT_32 u4LlcMis;		/* of those, LLC mismatch */
+	UINT_32 u4LlcMisUc;		/* of those, unicast: a hole in a BA session */
+	UINT_32 au4RxMode[5];		/* CCK, OFDM, HT MM, HT GF, VHT */
+	UINT_32 au4Mcs[10];		/* HT and VHT: rate index, 8 and up counted as 8 and 9 */
+	UINT_32 au4Bw[4];		/* 20, 40, 80, 160 */
+	UINT_32 u4Sgi;
+	UINT_32 au4PpduHist[7];		/* frames per RX vector: 1, 2, 3-4, 5-8, 9-16, 17-32, more */
+
+	/* reordering: main thread */
+	UINT_32 u4Reorder;		/* frames of a BA session */
+	UINT_32 u4NoBa;			/* A-MPDU frames without one */
+	UINT_32 u4Indep;		/* passed at once: ARP, ICMP, DHCP */
+	UINT_32 u4IndepDup;
+	UINT_32 u4Within;
+	UINT_32 u4InOrder;		/* of those, the one the window starts with */
+	UINT_32 u4Ahead;
+	UINT_32 u4AheadSn;		/* sequence numbers the window was moved by that */
+	UINT_32 u4Behind;		/* dropped: behind the window */
+	UINT_32 u4BehindLate;		/* of those, a number that was given up on before */
+	UINT_32 u4BehindAmsdu;		/* of those, an A-MSDU subframe */
+	UINT_32 u4DupInQue;		/* dropped: number already in the queue */
+	UINT_32 u4DupInQueAmsdu;	/* of those, an A-MSDU subframe */
+	UINT_32 u4MissTo;		/* holes skipped by the miss timeout */
+	UINT_32 u4MissToSn;
+	UINT_32 u4BubStart;		/* bubble timers started */
+	UINT_32 u4BubTo;		/* and expired */
+	UINT_32 u4BubFlush;		/* queue flushed by one */
+	UINT_32 u4BubFlushSn;
+	UINT_32 u4BarMove;		/* window moved by a BAR */
+	UINT_32 u4BarSn;
+	UINT_32 u4PopLt;		/* queued frames passed up by a window move */
+	UINT_32 u4NoWaitAdj;		/* numbers skipped as not to be waited for */
+	UINT_32 u4FwDropEvt;		/* drop events of the firmware */
+	UINT_32 u4FwDropSn;
+	UINT_32 u4ReorderQMax;
+
+	/* to the network stack: main thread, then rx_thread */
+	UINT_32 u4ToOs;
+	UINT_32 u4ToOsFail;
+	UINT_32 u4SeqOk;		/* BA frames passed up: number follows the one before */
+	UINT_32 u4SeqGap;		/* numbers were left out before it */
+	UINT_32 u4SeqGapSn;		/* how many */
+	UINT_32 u4SeqSame;		/* same number as the one before */
+	UINT_32 u4SeqBack;		/* an earlier number */
+	UINT_32 u4NetifRx;
+	UINT_32 u4NetifRxDrop;
+
+	/* state */
+	UINT_16 u2LastDropFlag;		/* RX status flags of the last frame dropped for them */
+	UINT_16 u2LastDropLen;
+	UINT_8 ucLastDropFmt;
+	UINT_16 u2BaParam;		/* BA parameter set of the last RX ADDBA event */
+	UINT_32 u4IsrBase;		/* GLUE_INFO_T::IsrCnt when the counters were last read */
+	UINT_8 ucLastRxv;
+	UINT_32 u4PpduRun;
+	UINT_16 au2LastSn[CFG_RX_MAX_BA_TID_NUM];
+	UINT_8 afgLastSnValid[CFG_RX_MAX_BA_TID_NUM];
+	UINT_8 aucSkipped[CFG_RX_MAX_BA_TID_NUM][RX_DBG_SN_NUM / 8];	/* numbers given up on */
+};
+
+extern struct RX_PATH_DBG_T g_rRxDbg;
+
+#define RX_DBG_INC(_field)		(g_rRxDbg._field++)
+#define RX_DBG_ADD(_field, _val)	(g_rRxDbg._field += (_val))
+#define RX_DBG_MAX(_field, _val) \
+	do { \
+		if ((_val) > g_rRxDbg._field) \
+			g_rRxDbg._field = (_val); \
+	} while (0)
+
+VOID nicRxDbgSkipSn(UINT_8 ucTid, UINT_16 u2From, UINT_16 u2To);
+VOID nicRxDbgAcceptSn(UINT_8 ucTid, UINT_16 u2Sn);
+BOOLEAN nicRxDbgTestAndClearSkippedSn(UINT_8 ucTid, UINT_16 u2Sn);
+VOID nicRxDbgHifCycle(UINT_64 u8IsrNs, UINT_64 u8ThreadNs, UINT_64 u8DoneNs);
+UINT_32 nicRxDbgDump(IN P_ADAPTER_T prAdapter, OUT PCHAR pcBuf, IN UINT_32 u4Size);
+#define RX_DBG_SET_SN_VALID(_prSwRfb, _fgValid)	((_prSwRfb)->ucDbgSnValid = (_fgValid))
+#else
+#define RX_DBG_INC(_field)
+#define RX_DBG_ADD(_field, _val)
+#define RX_DBG_MAX(_field, _val)
+#define RX_DBG_SET_SN_VALID(_prSwRfb, _fgValid)
+#define nicRxDbgSkipSn(_ucTid, _u2From, _u2To)
+#define nicRxDbgAcceptSn(_ucTid, _u2Sn)
+#endif /* CFG_RX_PATH_DBG */
 
 /*! RX configuration type structure */
 typedef struct _RX_CTRL_T {

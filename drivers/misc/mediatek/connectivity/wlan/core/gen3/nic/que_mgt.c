@@ -3053,11 +3053,14 @@ VOID qmProcessPktWithReordering(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb,
 	if (!prReorderQueParm || !(prReorderQueParm->fgIsValid)) { /* VHT single AMPDU */
 		DBGLOG(QM, TRACE, "AMPDU from STA[%d] TID[%d] without BA agreement, no-reordering\n",
 		       prStaRec->ucIndex, prSwRfb->ucTid);
+		RX_DBG_INC(u4NoBa);
 		QUEUE_INSERT_TAIL(prReturnedQue, (P_QUE_ENTRY_T) prSwRfb);
 		return;
 	}
 
 	prSwRfb->u2SSN = HAL_RX_STATUS_GET_SEQFrag_NUM(prSwRfb->prRxStatusGroup4) >> RX_STATUS_SEQ_NUM_OFFSET;
+	RX_DBG_INC(u4Reorder);
+	RX_DBG_SET_SN_VALID(prSwRfb, TRUE);
 
 	/* Start to reorder packets */
 	u4SeqNo = (UINT_32) (prSwRfb->u2SSN);
@@ -3115,9 +3118,13 @@ VOID qmProcessPktWithReordering(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb,
 					DBGLOG(QM, WARN, "Drop pkt with Eth type %d, Seq %u\n", u2EthType, u4SeqNo);
 				}
 				prSwRfb->eDst = RX_PKT_DESTINATION_NULL;
+				RX_DBG_INC(u4IndepDup);
 				QUEUE_INSERT_TAIL(prReturnedQue, (P_QUE_ENTRY_T) prSwRfb);
 				return;
 			}
+			/* passed up out of turn: not one for the check of the order */
+			RX_DBG_INC(u4Indep);
+			RX_DBG_SET_SN_VALID(prSwRfb, FALSE);
 			au2RecentSsn[j % RECENT_SSN_CACHE_NUM] = u4SeqNo;
 			DBGLOG(QM, TRACE, "Insert independentPkt to returnedQue directly\n");
 			QUEUE_INSERT_TAIL(prReturnedQue, (P_QUE_ENTRY_T) prSwRfb);
@@ -3139,7 +3146,14 @@ VOID qmProcessPktWithReordering(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb,
 	     /* 0 - sn - end - start - 4095 */
 	     || ((u4SeqNo <= u4WinEnd) && (u4WinEnd < u4WinStart))) {
 
+		RX_DBG_INC(u4Within);
+#if CFG_RX_PATH_DBG
+		if (u4SeqNo == u4WinStart)
+			RX_DBG_INC(u4InOrder);
+#endif
+		nicRxDbgAcceptSn(prSwRfb->ucTid, prSwRfb->u2SSN);
 		qmInsertFallWithinReorderPkt(prSwRfb, prReorderQueParm, prReturnedQue);
+		RX_DBG_MAX(u4ReorderQMax, prReorderQue->u4NumElem);
 
 #if QM_RX_WIN_SSN_AUTO_ADVANCING
 		if (prReorderQueParm->fgIsWaitingForPktWithSsn) {
@@ -3175,13 +3189,18 @@ VOID qmProcessPktWithReordering(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb,
 			prReorderQueParm->fgIsWaitingForPktWithSsn = FALSE;
 #endif
 
+		RX_DBG_INC(u4Ahead);
+		nicRxDbgAcceptSn(prSwRfb->ucTid, prSwRfb->u2SSN);
 		qmInsertFallAheadReorderPkt(prSwRfb, prReorderQueParm, prReturnedQue);
+		RX_DBG_MAX(u4ReorderQMax, prReorderQue->u4NumElem);
 
 		/* Advance the window after inserting a new tail */
 		prReorderQueParm->u2WinEnd = (UINT_16) u4SeqNo;
 		prReorderQueParm->u2WinStart =
 		    (((prReorderQueParm->u2WinEnd) - (prReorderQueParm->u2WinSize) + MAX_SEQ_NO_COUNT + 1)
 		     % MAX_SEQ_NO_COUNT);
+		RX_DBG_ADD(u4AheadSn, RX_DBG_SN_DIST(u4WinStart % RX_DBG_SN_NUM, prReorderQueParm->u2WinStart));
+		nicRxDbgSkipSn(prSwRfb->ucTid, (UINT_16) u4WinStart, prReorderQueParm->u2WinStart);
 
 		qmPopOutDueToFallAhead(prAdapter, prReorderQueParm, prReturnedQue);
 
@@ -3202,6 +3221,13 @@ VOID qmProcessPktWithReordering(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb,
 
 		/* An erroneous packet */
 		prSwRfb->eDst = RX_PKT_DESTINATION_NULL;
+#if CFG_RX_PATH_DBG
+		RX_DBG_INC(u4Behind);
+		if (prSwRfb->ucPayloadFormat != RX_PAYLOAD_FORMAT_MSDU)
+			RX_DBG_INC(u4BehindAmsdu);
+		else if (nicRxDbgTestAndClearSkippedSn(prSwRfb->ucTid, prSwRfb->u2SSN))
+			RX_DBG_INC(u4BehindLate);
+#endif
 		QUEUE_INSERT_TAIL(prReturnedQue, (P_QUE_ENTRY_T) prSwRfb);
 		/* DbgPrint("QM:(D)[%d](%ld){%ld,%ld}\n", prSwRfb->ucTid, u4SeqNo, u4WinStart, u4WinEnd); */
 		return;
@@ -3277,6 +3303,9 @@ VOID qmProcessBarFrame(IN P_ADAPTER_T prAdapter, IN P_SW_RFB_T prSwRfb, OUT P_QU
 	u4WinEnd = (UINT_32) (prReorderQueParm->u2WinEnd);
 
 	if (qmCompareSnIsLessThan(u4WinStart, u4SSN)) {
+		RX_DBG_INC(u4BarMove);
+		RX_DBG_ADD(u4BarSn, RX_DBG_SN_DIST(u4WinStart % RX_DBG_SN_NUM, u4SSN % RX_DBG_SN_NUM));
+		nicRxDbgSkipSn(prReorderQueParm->ucTid, (UINT_16) u4WinStart, (UINT_16) u4SSN);
 		prReorderQueParm->u2WinStart = (UINT_16) u4SSN;
 		prReorderQueParm->u2WinEnd =
 		    ((prReorderQueParm->u2WinStart) + (prReorderQueParm->u2WinSize) - 1) % MAX_SEQ_NO_COUNT;
@@ -3316,6 +3345,11 @@ VOID qmInsertFallWithinReorderPkt(IN P_SW_RFB_T prSwRfb, IN P_RX_BA_ENTRY_T prRe
 			/* Case 1: Terminate. A duplicate packet */
 			if ((prExaminedQueuedSwRfb->u2SSN) == (prSwRfb->u2SSN)) {
 				prSwRfb->eDst = RX_PKT_DESTINATION_NULL;
+#if CFG_RX_PATH_DBG
+				RX_DBG_INC(u4DupInQue);
+				if (prSwRfb->ucPayloadFormat != RX_PAYLOAD_FORMAT_MSDU)
+					RX_DBG_INC(u4DupInQueAmsdu);
+#endif
 				QUEUE_INSERT_TAIL(prReturnedQue, (P_QUE_ENTRY_T) prSwRfb);
 				return;
 			}
@@ -3425,6 +3459,7 @@ VOID qmPopOutDueToFallWithin(IN P_ADAPTER_T prAdapter, IN P_RX_BA_ENTRY_T prReor
 						   prAdapter->u4QmRxBaMissTimeout);
 				prReorderQueParm->fgHasBubble = TRUE;
 				prReorderQueParm->u2FirstBubbleSn = prReorderQueParm->u2WinStart;
+				RX_DBG_INC(u4BubStart);
 
 				DBGLOG(QM, TRACE,
 				       "QM:(Bub Timer) STA[%u] TID[%u] BubSN[%u] Win{%d, %d}\n",
@@ -3439,6 +3474,11 @@ VOID qmPopOutDueToFallWithin(IN P_ADAPTER_T prAdapter, IN P_RX_BA_ENTRY_T prReor
 				DBGLOG(QM, TRACE,
 				       "QM:RX BA Timout Next Tid %d SSN %d\n",
 					prReorderQueParm->ucTid, prReorderedSwRfb->u2SSN);
+				RX_DBG_INC(u4MissTo);
+				RX_DBG_ADD(u4MissToSn, RX_DBG_SN_DIST(prReorderQueParm->u2WinStart % RX_DBG_SN_NUM,
+								      prReorderedSwRfb->u2SSN));
+				nicRxDbgSkipSn(prReorderQueParm->ucTid, prReorderQueParm->u2WinStart,
+					       prReorderedSwRfb->u2SSN);
 				fgDequeuHead = TRUE;
 				prReorderQueParm->u2WinStart = (((prReorderedSwRfb->u2SSN) + 1) % MAX_SEQ_NO_COUNT);
 
@@ -3512,8 +3552,11 @@ VOID qmPopOutDueToFallAhead(IN P_ADAPTER_T prAdapter, IN P_RX_BA_ENTRY_T prReord
 
 		/* SN < WinStart, so the head packet shall be indicated (do not advance the window) */
 		else if (qmCompareSnIsLessThan((UINT_32) (prReorderedSwRfb->u2SSN),
-					       (UINT_32) (prReorderQueParm->u2WinStart)))
+					       (UINT_32) (prReorderQueParm->u2WinStart))) {
 			fgDequeuHead = TRUE;
+			RX_DBG_INC(u4PopLt);
+			nicRxDbgAcceptSn(prReorderQueParm->ucTid, prReorderedSwRfb->u2SSN);
+		}
 
 		/* SN > WinStart, break to update WinEnd */
 		else {
@@ -3524,6 +3567,7 @@ VOID qmPopOutDueToFallAhead(IN P_ADAPTER_T prAdapter, IN P_RX_BA_ENTRY_T prReord
 						   prAdapter->u4QmRxBaMissTimeout);
 				prReorderQueParm->fgHasBubble = TRUE;
 				prReorderQueParm->u2FirstBubbleSn = prReorderQueParm->u2WinStart;
+				RX_DBG_INC(u4BubStart);
 
 				DBGLOG(QM, TRACE,
 				       "QM:(Bub Timer) STA[%u] TID[%u] BubSN[%u] Win{%d, %d}\n",
@@ -3580,6 +3624,7 @@ VOID qmHandleReorderBubbleTimeout(IN P_ADAPTER_T prAdapter, IN ULONG ulParamPtr)
 
 	DBGLOG(QM, TRACE, "QM:(Bub Timeout) STA[%u] TID[%u] BubSN[%u]\n",
 			   prReorderQueParm->ucStaRecIdx, prReorderQueParm->ucTid, prReorderQueParm->u2FirstBubbleSn);
+	RX_DBG_INC(u4BubTo);
 
 	/* Generate a self-inited event to Rx path */
 	KAL_ACQUIRE_SPIN_LOCK(prAdapter, SPIN_LOCK_RX_FREE_QUE);
@@ -3683,6 +3728,10 @@ VOID qmHandleEventCheckReorderBubble(IN P_ADAPTER_T prAdapter, IN P_WIFI_EVENT_T
 
 		prReorderedSwRfb = (P_SW_RFB_T) QUEUE_GET_TAIL(prReorderQue);
 
+		RX_DBG_INC(u4BubFlush);
+		RX_DBG_ADD(u4BubFlushSn, RX_DBG_SN_DIST(prReorderQueParm->u2WinStart % RX_DBG_SN_NUM,
+							(prReorderedSwRfb->u2SSN + 1) % RX_DBG_SN_NUM));
+		nicRxDbgSkipSn(prReorderQueParm->ucTid, prReorderQueParm->u2WinStart, prReorderedSwRfb->u2SSN + 1);
 		prReorderQueParm->u2WinStart = prReorderedSwRfb->u2SSN + 1;
 		prReorderQueParm->u2WinEnd =
 		    ((prReorderQueParm->u2WinStart) + (prReorderQueParm->u2WinSize) - 1) % MAX_SEQ_NO_COUNT;
@@ -3810,6 +3859,9 @@ VOID qmHandleEventRxAddBa(IN P_ADAPTER_T prAdapter, IN P_WIFI_EVENT_T prEvent)
 
 	u4WinSize = (((prEventRxAddBa->u2BAParameterSet) & BA_PARAM_SET_BUFFER_SIZE_MASK)
 		     >> BA_PARAM_SET_BUFFER_SIZE_MASK_OFFSET);
+#if CFG_RX_PATH_DBG
+	g_rRxDbg.u2BaParam = prEventRxAddBa->u2BAParameterSet;
+#endif
 
 	if (!qmAddRxBaEntry(prAdapter,
 			    prStaRec->ucIndex,
@@ -4090,12 +4142,14 @@ VOID qmHandleEventDropByFW(IN P_ADAPTER_T prAdapter, IN P_WIFI_EVENT_T prEvent)
 	}
 
 	u2OfCount = 0;
+	RX_DBG_INC(u4FwDropEvt);
 
 	for (u1SetCount = 0; u1SetCount < QM_RX_MAX_FW_DROP_SSN_SIZE; u1SetCount++) {
 		u1BitmapSSN = prDropSSNEvt->au1BitmapSSN[u1SetCount];
 
 		for (u1Count = 0; u1Count < 8; u1Count++) {
 			if ((u1BitmapSSN & BIT(0)) == 1) {
+				RX_DBG_INC(u4FwDropSn);
 				prNoNeedWaitPkt = (P_NO_NEED_WAIT_PKT_T) kalMemAlloc(sizeof(NO_NEED_WAIT_PKT_T),
 						VIR_MEM_TYPE);
 				if (prNoNeedWaitPkt == NULL) {
@@ -4171,6 +4225,7 @@ VOID qmHandleNoNeedWaitPktList(IN P_RX_BA_ENTRY_T prReorderQueParm)
 		/* Adjust WinStart if current WinStart is contain in NoNeedWaitQue */
 		while ((prNoNeedWaitPkt = qmSearchNoNeedWaitPktBySSN(prReorderQueParm, prReorderQueParm->u2WinStart))
 			!= NULL) {
+			RX_DBG_INC(u4NoWaitAdj);
 			prReorderQueParm->u2WinStart = (((prNoNeedWaitPkt->u2SSN) + 1) % MAX_SEQ_NO_COUNT);
 			prReorderQueParm->u2WinEnd =
 			(((prReorderQueParm->u2WinStart) + (prReorderQueParm->u2WinSize) - 1) % MAX_SEQ_NO_COUNT);
@@ -6889,6 +6944,9 @@ void qmHandleBaOffloadBarFrame(IN P_ADAPTER_T prAdapter,
 	u4WinEnd = (uint32_t) (prReorderQueParm->u2WinEnd);
 
 	if (qmCompareSnIsLessThan(u4WinStart, u4SSN)) {
+		RX_DBG_INC(u4BarMove);
+		RX_DBG_ADD(u4BarSn, RX_DBG_SN_DIST(u4WinStart % RX_DBG_SN_NUM, u4SSN % RX_DBG_SN_NUM));
+		nicRxDbgSkipSn(prReorderQueParm->ucTid, (UINT_16) u4WinStart, (UINT_16) u4SSN);
 		prReorderQueParm->u2WinStart = (uint16_t) u4SSN;
 		prReorderQueParm->u2WinEnd =
 			((prReorderQueParm->u2WinStart) +

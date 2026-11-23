@@ -126,6 +126,7 @@ VOID nicpmSetFWOwn(IN P_ADAPTER_T prAdapter, IN BOOLEAN fgEnableGlobalInt)
 	}
 
 	prAdapter->fgIsFwOwn = TRUE;
+	RX_DBG_INC(u4FwOwn);
 	DBGLOG(NIC, TRACE, "FW OWN\n");
 }
 
@@ -279,6 +280,8 @@ BOOLEAN nicpmSetDriverOwn(IN P_ADAPTER_T prAdapter)
 		kalUsleep_range(LP_OWN_BACK_LOOP_DELAY_MIN_US, LP_OWN_BACK_LOOP_DELAY_MAX_US);
 		i++;
 	}
+	RX_DBG_INC(u4DrvOwn);
+	RX_DBG_ADD(u4DrvOwnLoop, i);
 	if (i > 3)
 		DBGLOG(NIC, INFO, "DRIVER OWN, status=%d count=%d\n", fgStatus, i);
 	else
