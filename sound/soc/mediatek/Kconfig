@@ -209,6 +209,21 @@ config SND_SOC_MT8183_DA7219_MAX98357A
 	  Select Y if you have such device.
 	  If unsure select "N".
 
+config SND_SOC_MT8183_MT6358_TRONA
+	tristate "ASoC Audio driver for Amazon Trona (MT8183 with MT6358 codec)"
+	depends on SND_SOC_MT8183 && GPIOLIB
+	select SND_SOC_MT6358
+	help
+	  This adds the ASoC machine driver for the Amazon Fire HD 10
+	  (2021, "trona"). Unlike the other MT8183 boards above, trona has
+	  no external I2C/I2S smart amplifier: it drives its speaker from
+	  MT6358's own analog headphone/line-out stage into a discrete
+	  Class-D amplifier controlled purely by two GPIOs (enable and
+	  gain). Microphone capture is analog, through MT6358's AIN0/AIN2
+	  inputs.
+	  Select Y if you have such device.
+	  If unsure select "N".
+
 config SND_SOC_MT8186
 	tristate "ASoC support for Mediatek MT8186 chip"
 	depends on ARCH_MEDIATEK || COMPILE_TEST
