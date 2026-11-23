@@ -146,16 +146,17 @@ static CHAR acResumeTime[32];
             *f_pos += _u4Copy_size; \
         } while (0)
 
+/* Bounded with a ternary min (not "count+1 >= sizeof(aucProcBuf)") because
+ * the old form let count+1 wrap to 0 when count == SIZE_MAX, taking the
+ * "safe" branch with an unbounded u4CopySize == count. GCC's hardened
+ * usercopy check (check_copy_size()/__bad_copy_to()) catches this at
+ * compile time once the destination object size is known.
+ */
 #define PROC_WRITE_COMMON(buffer, count) \
         do { \
-            UINT_32 u4CopySize = sizeof(aucProcBuf); \
-            kalMemSet(aucProcBuf, 0, u4CopySize); \
-            if (u4CopySize >= count+1) { \
-                u4CopySize = count; \
-            } \
-            else \
-            {   u4CopySize = u4CopySize - 1; \
-            } \
+            UINT_32 u4CopySize = ((count) < sizeof(aucProcBuf) - 1) ? \
+                                 (count) : sizeof(aucProcBuf) - 1; \
+            kalMemSet(aucProcBuf, 0, sizeof(aucProcBuf)); \
             if (copy_from_user(aucProcBuf, buffer, u4CopySize)) { \
                 pr_err("error of copy from user\n"); \
                 return -EFAULT; \
@@ -778,10 +779,8 @@ static ssize_t procDbgLevelWrite(struct file *file, const char __user *buffer, s
 	UINT_32 u4CopySize = sizeof(aucProcBuf);
 
 	kalMemSet(aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
-		u4CopySize = count;
-	else
-		u4CopySize = u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (copy_from_user(aucProcBuf, buffer, u4CopySize)) {
 		pr_err("error of copy from user\n");
@@ -894,10 +893,8 @@ static ssize_t procPktDelayDbgCfgWrite(struct file *file, const char __user *buf
 	UINT_8 ucTxOrRx = 0;
 
 	kalMemSet(aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count + 1)
-		u4CopySize = count;
-	else
-		u4CopySize = u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (copy_from_user(aucProcBuf, buffer, u4CopySize)) {
 		pr_err("error of copy from user\n");
@@ -952,10 +949,8 @@ static ssize_t procSetCamCfgWrite(struct file *file, const char __user *buffer, 
 	BOOLEAN fgParamValue = TRUE;
 
 	kalMemSet(aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count + 1)
-		u4CopySize = count;
-	else
-		u4CopySize = u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (copy_from_user(aucProcBuf, buffer, u4CopySize)) {
 		pr_err("error of copy from user\n");
@@ -1155,10 +1150,8 @@ static ssize_t procRoamWrite(struct file *file, const char __user *buffer,
 	UINT_32 u4CopySize = sizeof(aucProcBuf);
 
 	kalMemSet(aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
-		u4CopySize = count;
-	else
-		u4CopySize = u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (copy_from_user(aucProcBuf, buffer, u4CopySize)) {
 		pr_err("error of copy from user\n");
@@ -1225,10 +1218,8 @@ static ssize_t procCountryWrite(struct file *file, const char __user *buffer,
 	UINT_8 aucCountry[2];
 
 	kalMemSet(aucProcBuf, 0, u4CopySize);
-	if (u4CopySize >= count+1)
-		u4CopySize = count;
-	else
-		u4CopySize = u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (copy_from_user(aucProcBuf, buffer, u4CopySize)) {
 		pr_err("error of copy from user\n");
@@ -1467,7 +1458,8 @@ static ssize_t procWifiCfgWrite(struct file *file, const char __user *buffer, si
 	prAdapter = g_prGlueInfo_proc->prAdapter;
 	kalMemSet(aucProcBuf, 0, u4CopySize);
 
-	u4CopySize = (u4CopySize >= count + 1) ? count : u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (!u4CopySize || copy_from_user(aucProcBuf, buffer, u4CopySize)) {
 		pr_err("error of copy from user\n");
@@ -2207,10 +2199,8 @@ static ssize_t cfgWrite(struct file *filp, const char __user *buf, size_t count,
 
 	kalMemSet(aucCfgBuf, 0, u4CopySize);
 
-	if (u4CopySize >= (count + 1))
-		u4CopySize = count;
-	else
-		u4CopySize = u4CopySize - 1;
+	/* count+1 can wrap to 0 when count == SIZE_MAX, see PROC_WRITE_COMMON */
+	u4CopySize = (count < u4CopySize - 1) ? count : u4CopySize - 1;
 
 	if (copy_from_user(aucCfgBuf, buf, u4CopySize)) {
 		DBGLOG(INIT, ERROR, "copy from user failed\n");
