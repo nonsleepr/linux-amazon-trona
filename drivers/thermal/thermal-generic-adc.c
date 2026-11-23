@@ -9,6 +9,7 @@
 #include <linux/iio/consumer.h>
 #include <linux/iio/iio.h>
 #include <linux/kernel.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/slab.h>
@@ -48,8 +49,8 @@ static int gadc_thermal_adc_to_temp(struct gadc_thermal_info *gti, int val)
 		temp_hi = gti->lookup_table[2 * i - 2];
 		temp_lo = gti->lookup_table[2 * i];
 
-		temp = temp_hi + mult_frac(temp_lo - temp_hi, val - adc_hi,
-					   adc_lo - adc_hi);
+		temp = temp_hi + div_s64((s64)(temp_lo - temp_hi) * (val - adc_hi),
+					 adc_lo - adc_hi);
 	}
 
 	return temp;
