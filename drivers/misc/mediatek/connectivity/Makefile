@@ -2,3 +2,4 @@
 
 obj-$(CONFIG_MTK_COMBO)		+= common/
 obj-$(CONFIG_MTK_COMBO_WIFI)	+= wlan/
+obj-$(CONFIG_MTK_COMBO_BT)	+= bt/

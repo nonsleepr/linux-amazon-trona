@@ -77,6 +77,21 @@ config MTK_COMBO_WIFI
 
 	  The modules are called wlan_drv_gen3 and wmt_chrdev_wifi.
 
+config MTK_COMBO_BT
+	tristate "MediaTek STP Bluetooth HCI driver for the connectivity subsystem"
+	depends on MTK_COMBO && BT && m
+	help
+	  Registers a Bluetooth hci_dev with the kernel's Bluetooth core and
+	  switches the BT function on through the WMT core, the way
+	  MTK_COMBO_WIFI's wmt_chrdev_wifi does for WiFi. HCI packets are
+	  H:4 framed in the BT channel of the WMT core's STP transport, and
+	  the controller gets the vendor's init commands (BD address from
+	  the IDME /idme/bt_mac_addr node, radio, TX power, sleep) on open.
+
+	  SCO audio is not routed: MediaTek combo chips carry it outside HCI.
+
+	  The module is called btmtk_stp.
+
 config AMZN_IDME
 	bool "Amazon IDME device data from the device tree"
 	depends on MTK_COMBO_WIFI

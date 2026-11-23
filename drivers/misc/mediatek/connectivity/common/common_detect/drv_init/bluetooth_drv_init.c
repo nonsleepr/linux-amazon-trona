@@ -20,24 +20,16 @@
 #include "wmt_detect.h"
 #include "bluetooth_drv_init.h"
 
-#ifdef CONFIG_MTK_COMBO_BT
-int __attribute__((weak)) mtk_wcn_stpbt_drv_init(void)
-{
-	WMT_DETECT_PR_INFO("Not implement mtk_wcn_stpbt_drv_init\n");
-	return 0;
-}
-#endif
-
+/*
+ * The vendor's per-chip driver init hook (conn_drv_init.c, only built with
+ * MTK_WCN_REMOVE_KO, which nothing here defines) called a weak
+ * mtk_wcn_stpbt_drv_init() stub for the BT adaptor, behind a CONFIG_MTK_COMBO_BT
+ * that did not exist. That option is now the HCI driver in bt/adaptor/, a module
+ * that switches BT on by itself like wmt_cdev_wifi.c does for WiFi, so there is
+ * nothing for this hook to call.
+ */
 int do_bluetooth_drv_init(int chip_id)
 {
-	int i_ret = -1;
-
-#ifdef CONFIG_MTK_COMBO_BT
-	WMT_DETECT_PR_INFO("start to do bluetooth driver init\n");
-	i_ret = mtk_wcn_stpbt_drv_init();
-	WMT_DETECT_PR_INFO("finish bluetooth driver init, i_ret:%d\n", i_ret);
-#else
-	WMT_DETECT_PR_INFO("CONFIG_MTK_COMBO_BT is not defined\n");
-#endif
-	return i_ret;
+	WMT_DETECT_PR_INFO("BT driver init is not done from here\n");
+	return -1;
 }
