@@ -18,6 +18,8 @@
  *  - Whenever the current stays low for a while, the OCV estimate is
  *    accurate, and the coulomb-counted charge is pulled towards it to undo
  *    drift (and a wrong starting point taken under load).
+ *  - The battery temperature, if the DT has a "temp" IIO channel for it, is
+ *    only reported; the OCV table is the one for AMBIENT_CELSIUS.
  *
  * Copyright (c) 2026 Toshit Chawda <r58playz@gmail.com>
  */
@@ -80,6 +82,8 @@ struct mt6358_gauge {
 	struct regmap *regmap;
 	struct iio_channel *vbat;
 	struct iio_channel *vbus;
+	struct iio_channel *temp;
+	struct power_supply_desc desc;
 	struct power_supply *psy;
 	struct power_supply_battery_info *info;
 	struct delayed_work work;
@@ -167,6 +171,23 @@ static int mt6358_gauge_read_vbat(struct mt6358_gauge *gg, int *volt_uv)
 
 	*volt_uv = ((s64)raw * MT6358_BATADC_FULL_SCALE_UV) >> MT6358_BATADC_BITS;
 	return 0;
+}
+
+/*
+ * The temperature sensor is optional and may probe late or never: look it up
+ * on first use instead of holding up the gauge itself.
+ */
+static int mt6358_gauge_read_temp(struct mt6358_gauge *gg, int *temp_mc)
+{
+	if (!gg->temp) {
+		struct iio_channel *chan = devm_iio_channel_get(gg->dev, "temp");
+
+		if (IS_ERR(chan))
+			return PTR_ERR(chan) == -EPROBE_DEFER ? -ENODATA : PTR_ERR(chan);
+		gg->temp = chan;
+	}
+
+	return iio_read_channel_processed(gg->temp, temp_mc);
 }
 
 static s64 mt6358_gauge_charge_now(struct mt6358_gauge *gg, s32 car)
@@ -307,6 +328,8 @@ static const enum power_supply_property mt6358_gauge_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
 	POWER_SUPPLY_PROP_CAPACITY,
+	/* Keep last: only advertised if the DT has a "temp" channel */
+	POWER_SUPPLY_PROP_TEMP,
 };
 
 static int mt6358_gauge_get_property(struct power_supply *psy,
@@ -314,8 +337,8 @@ static int mt6358_gauge_get_property(struct power_supply *psy,
 				     union power_supply_propval *val)
 {
 	struct mt6358_gauge *gg = power_supply_get_drvdata(psy);
+	int ret, temp_mc;
 	s32 car;
-	int ret;
 
 	guard(mutex)(&gg->lock);
 
@@ -327,7 +350,8 @@ static int mt6358_gauge_get_property(struct power_supply *psy,
 		val->intval = 1;
 		return 0;
 	case POWER_SUPPLY_PROP_TECHNOLOGY:
-		val->intval = POWER_SUPPLY_TECHNOLOGY_LION;
+		val->intval = gg->info && gg->info->technology != POWER_SUPPLY_TECHNOLOGY_UNKNOWN ?
+			      gg->info->technology : POWER_SUPPLY_TECHNOLOGY_LION;
 		return 0;
 	case POWER_SUPPLY_PROP_SCOPE:
 		val->intval = POWER_SUPPLY_SCOPE_SYSTEM;
@@ -358,6 +382,13 @@ static int mt6358_gauge_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = gg->capacity;
 		return 0;
+	case POWER_SUPPLY_PROP_TEMP:
+		ret = mt6358_gauge_read_temp(gg, &temp_mc);
+		if (ret)
+			return ret;
+		/* In tenths of a degree */
+		val->intval = DIV_ROUND_CLOSEST(temp_mc, 100);
+		return 0;
 	default:
 		return -EINVAL;
 	}
@@ -377,6 +408,8 @@ static const struct power_supply_desc mt6358_gauge_desc = {
 	.num_properties = ARRAY_SIZE(mt6358_gauge_props),
 	.get_property = mt6358_gauge_get_property,
 	.external_power_changed = mt6358_gauge_external_power_changed,
+	/* The DT's own thermal zone for the sensor is the one to use */
+	.no_thermal = true,
 };
 
 static int mt6358_gauge_probe(struct platform_device *pdev)
@@ -430,9 +463,13 @@ static int mt6358_gauge_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
+	gg->desc = mt6358_gauge_desc;
+	if (device_property_match_string(dev, "io-channel-names", "temp") < 0)
+		gg->desc.num_properties--;
+
 	cfg.drv_data = gg;
 	cfg.fwnode = dev_fwnode(dev);
-	gg->psy = devm_power_supply_register(dev, &mt6358_gauge_desc, &cfg);
+	gg->psy = devm_power_supply_register(dev, &gg->desc, &cfg);
 	if (IS_ERR(gg->psy))
 		return dev_err_probe(dev, PTR_ERR(gg->psy), "failed to register battery\n");
 
