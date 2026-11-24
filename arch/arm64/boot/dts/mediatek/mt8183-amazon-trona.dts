@@ -898,7 +898,14 @@
 		pins-irq {
 			pinmux = <PINMUX_GPIO41__FUNC_GPIO41>;
 			input-enable;
-			bias-pull-up;
+			/*
+			 * GPIO41 is one of the SoC pins with R1/R0 pull control
+			 * (mt8183_pin_pupd_range), which rejects a bare
+			 * bias-pull-up ("Invalid pull argument") and made the
+			 * TCPC probe fail with -EINVAL. GPIO10 above is a plain
+			 * PU/PD pin, so it does not need the argument.
+			 */
+			bias-pull-up = <MTK_PUPD_SET_R1R0_01>;
 		};
 	};
 
