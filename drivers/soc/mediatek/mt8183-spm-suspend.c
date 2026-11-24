@@ -47,6 +47,7 @@
 #include <linux/irq.h>
 #include <linux/irqchip/arm-gic-v3.h>
 #include <linux/moduleparam.h>
+#include <linux/mutex.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -108,15 +109,50 @@ static const char * const wake_src_names[32] = {
 };
 
 /*
- * Deep suspend is opt-in: with this clear "echo mem > /sys/power/state"
- * fails with -EOPNOTSUPP (logind then falls back to "freeze") instead of
- * going into a firmware path that may not come back. Set it at run time,
- * in /sys/module/mt8183_spm_suspend/parameters, or on the kernel command
- * line as mt8183_spm_suspend.deep_suspend=1.
+ * Deep suspend is opt-in, and so is all the hardware setup behind it: at boot
+ * the driver only takes suspend-to-RAM over from PSCI's bare SYSTEM_SUSPEND
+ * (which never returns on this firmware) and reads the breadcrumbs. Setting
+ * deep_suspend to 1, at run time in /sys/module/mt8183_spm_suspend/parameters
+ * or on the command line (mt8183_spm_suspend.deep_suspend=1), does the rest:
+ * the SiP calls, the SPM interrupt, the mailbox and register mappings. With
+ * it clear, "echo mem > /sys/power/state" fails with -EOPNOTSUPP (logind then
+ * falls back to "freeze") instead of going into a firmware path that may not
+ * come back.
  */
 static bool deep_suspend;
-module_param(deep_suspend, bool, 0644);
-MODULE_PARM_DESC(deep_suspend, "allow suspend to RAM through the vendor SPM (default off)");
+static int mt8183_spm_setup(void);
+static bool spm_inited;
+static DEFINE_MUTEX(spm_setup_lock);
+
+static int deep_suspend_set(const char *val, const struct kernel_param *kp)
+{
+	bool on;
+	int ret;
+
+	ret = kstrtobool(val, &on);
+	if (ret)
+		return ret;
+
+	/* From the command line, long before the late initcall */
+	if (!spm_inited) {
+		deep_suspend = on;
+		return 0;
+	}
+
+	mutex_lock(&spm_setup_lock);
+	ret = on ? mt8183_spm_setup() : 0;
+	if (!ret)
+		deep_suspend = on;
+	mutex_unlock(&spm_setup_lock);
+	return ret;
+}
+
+static const struct kernel_param_ops deep_suspend_ops = {
+	.set = deep_suspend_set,
+	.get = param_get_bool,
+};
+module_param_cb(deep_suspend, &deep_suspend_ops, &deep_suspend, 0644);
+MODULE_PARM_DESC(deep_suspend, "allow suspend to RAM through the vendor SPM, and set it up (default off)");
 
 /* What woke the last deep suspend, read-only, for the test scripts */
 static unsigned int last_wake_src;
@@ -201,6 +237,8 @@ struct mt8183_spm {
 	bool no_sspm;
 	bool prepared;
 	bool wake_unreported;
+	bool ready;
+	bool cpuhp;
 	/* GIC distributor, and the SPM's interrupt (INTID) left enabled */
 	void __iomem *gicd;
 	u32 spm_irq;
@@ -412,7 +450,7 @@ static int mt8183_spm_suspend_begin(suspend_state_t state)
 	if (state != PM_SUSPEND_MEM)
 		return 0;
 
-	if (!deep_suspend) {
+	if (!deep_suspend || !spm.ready) {
 		pr_warn_once("deep suspend is off (echo 1 > /sys/module/mt8183_spm_suspend/parameters/deep_suspend)\n");
 		return -EOPNOTSUPP;
 	}
@@ -552,19 +590,18 @@ static void __init mt8183_spm_crumbs_init(struct device_node *np)
 	mt8183_spm_crumb_flush();
 }
 
-/* After psci's own suspend_set_ops() (psci_dt_init at setup_arch time) */
-static int __init mt8183_spm_suspend_init(void)
+static struct device_node *spm_np;
+
+/* Everything that touches the hardware or the firmware; spm_setup_lock held */
+static int mt8183_spm_setup(void)
 {
-	struct device_node *np;
+	struct device_node *np = spm_np;
 	u32 fw_idx;
-	unsigned int irq;
+	unsigned int irq = 0;
 	int ret;
 
-	np = of_find_compatible_node(NULL, NULL, "mediatek,mt8183-vendor-spm");
-	if (!np || !of_device_is_available(np)) {
-		of_node_put(np);
+	if (spm.ready)
 		return 0;
-	}
 
 	ret = of_property_read_u32(np, "mediatek,spm-firmware-index", &fw_idx);
 	of_property_read_u32(np, "mediatek,pcm-flags", &spm.pcm_flags);
@@ -578,12 +615,10 @@ static int __init mt8183_spm_suspend_init(void)
 	spm.no_sspm = of_property_read_bool(np, "mediatek,no-sspm");
 	spm.fw_flags = SPM_FW_FLAGS_NO_DVFS;
 	of_property_read_u32(np, "mediatek,spm-fw-flags", &spm.fw_flags);
-	mt8183_spm_crumbs_init(np);
 	spm.mbox = of_iomap(np, 0);
 	spm.mbox_irq = of_iomap(np, 1);
 	spm.spm_base = of_iomap(np, 2);
 	irq = irq_of_parse_and_map(np, 0);
-	of_node_put(np);
 	if (ret || !spm.mbox || !spm.mbox_irq || !spm.spm_base || !irq) {
 		pr_err("incomplete DT node\n");
 		ret = -EINVAL;
@@ -606,7 +641,7 @@ static int __init mt8183_spm_suspend_init(void)
 
 	if (mt8183_spm_smc(MTK_SIP_KERNEL_SPM_FIRMWARE_STATUS, 0, 0, 0) != 1) {
 		pr_warn("SPM firmware not loaded, deep suspend unavailable\n");
-		ret = 0;
+		ret = -ENODEV;
 		goto err_unmap;
 	}
 
@@ -621,11 +656,13 @@ static int __init mt8183_spm_suspend_init(void)
 	}
 	spm.spm_irq = mt8183_spm_irq_intid(irq);
 
-	if (spm.crumbs)
+	if (spm.crumbs && !spm.cpuhp) {
 		cpuhp_setup_state_nocalls(CPUHP_BP_PREPARE_DYN, "soc/mt8183-spm:dead",
 					  NULL, mt8183_spm_cpu_dead);
+		spm.cpuhp = true;
+	}
 
-	suspend_set_ops(&mt8183_spm_suspend_ops);
+	spm.ready = true;
 
 	pr_info("deep suspend via vendor SPM (firmware %u flags %#x%s, SPM IRQ %u, method %u, state %#x, flags %#x/%#x, timer %#x, wake sources %#lx%s%s%s)\n",
 		fw_idx, spm.fw_flags,
@@ -640,6 +677,8 @@ static int __init mt8183_spm_suspend_init(void)
 	return 0;
 
 err_unmap:
+	if (irq)
+		irq_dispose_mapping(irq);
 	if (spm.spm_base)
 		iounmap(spm.spm_base);
 	if (spm.gicd)
@@ -650,6 +689,40 @@ err_unmap:
 		iounmap(spm.mbox_irq);
 	if (spm.mbox)
 		iounmap(spm.mbox);
+	spm.spm_base = spm.gicd = spm.mcdi = spm.mbox_irq = spm.mbox = NULL;
 	return ret;
+}
+
+/*
+ * After psci's own suspend_set_ops() (psci_dt_init at setup_arch time).
+ * What runs at boot: look for the DT node, report the breadcrumbs of a
+ * suspend that didn't finish, take suspend to RAM over from PSCI. Nothing
+ * touches the firmware or the SPM until deep_suspend is switched on.
+ */
+static int __init mt8183_spm_suspend_init(void)
+{
+	struct device_node *np;
+
+	np = of_find_compatible_node(NULL, NULL, "mediatek,mt8183-vendor-spm");
+	if (!np || !of_device_is_available(np)) {
+		of_node_put(np);
+		return 0;
+	}
+
+	spm_np = np;
+	mt8183_spm_crumbs_init(np);
+	suspend_set_ops(&mt8183_spm_suspend_ops);
+
+	mutex_lock(&spm_setup_lock);
+	spm_inited = true;
+	if (deep_suspend && mt8183_spm_setup()) {
+		pr_err("deep suspend requested on the command line, but not available\n");
+		deep_suspend = false;
+	}
+	mutex_unlock(&spm_setup_lock);
+	if (!deep_suspend)
+		pr_info("deep suspend is off (set mt8183_spm_suspend.deep_suspend=1 to use it)\n");
+
+	return 0;
 }
 late_initcall(mt8183_spm_suspend_init);
