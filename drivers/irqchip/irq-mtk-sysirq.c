@@ -13,6 +13,8 @@
 #include <linux/io.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#include <linux/suspend.h>
+#include <linux/syscore_ops.h>
 
 struct mtk_sysirq_chip_data {
 	raw_spinlock_t lock;
@@ -21,7 +23,13 @@ struct mtk_sysirq_chip_data {
 	u32 *intpol_words;
 	u8 *intpol_idx;
 	u16 *which_word;
+	u32 *saved;
+	u32 lost;
 };
+
+#ifdef CONFIG_PM_SLEEP
+static struct mtk_sysirq_chip_data *sysirq_pm_data;
+#endif
 
 static int mtk_sysirq_set_type(struct irq_data *data, unsigned int type)
 {
@@ -213,6 +221,9 @@ static int __init mtk_sysirq_of_init(struct device_node *node,
 		goto out_free_which_word;
 	}
 	raw_spin_lock_init(&chip_data->lock);
+#ifdef CONFIG_PM_SLEEP
+	sysirq_pm_data = chip_data;
+#endif
 
 	return 0;
 
@@ -232,3 +243,88 @@ out_free_chip:
 	return ret;
 }
 IRQCHIP_DECLARE(mtk_sysirq, "mediatek,mt6577-sysirq", mtk_sysirq_of_init);
+
+#ifdef CONFIG_PM_SLEEP
+/*
+ * The polarity registers can live in a power domain that a deep system
+ * suspend takes down (MT8183: MCUSYS, with the GIC), and nothing else
+ * sets them up again: every active-low line would then look asserted
+ * after the resume. Save them, and put back any that changed.
+ */
+static int mtk_sysirq_suspend(void *data)
+{
+	struct mtk_sysirq_chip_data *cd = sysirq_pm_data;
+	u32 i, w, n = 0;
+
+	for (i = 0; i < cd->nr_intpol_bases; i++)
+		for (w = 0; w < cd->intpol_words[i]; w++)
+			cd->saved[n++] = readl_relaxed(cd->intpol_bases[i] + w * 4);
+
+	return 0;
+}
+
+static void mtk_sysirq_resume(void *data)
+{
+	struct mtk_sysirq_chip_data *cd = sysirq_pm_data;
+	u32 i, w, n = 0, lost = 0, val;
+
+	for (i = 0; i < cd->nr_intpol_bases; i++) {
+		for (w = 0; w < cd->intpol_words[i]; w++, n++) {
+			val = readl_relaxed(cd->intpol_bases[i] + w * 4);
+			if (val == cd->saved[n])
+				continue;
+			writel_relaxed(cd->saved[n], cd->intpol_bases[i] + w * 4);
+			lost++;
+		}
+	}
+
+	cd->lost = lost;
+}
+
+/* Reported from here: syscore callbacks run with interrupts off, devices suspended */
+static int mtk_sysirq_pm_notify(struct notifier_block *nb, unsigned long action,
+				void *data)
+{
+	struct mtk_sysirq_chip_data *cd = sysirq_pm_data;
+
+	if (action == PM_POST_SUSPEND && cd->lost) {
+		pr_info("mtk_sysirq: %u polarity words lost over suspend, restored\n",
+			cd->lost);
+		cd->lost = 0;
+	}
+	return NOTIFY_OK;
+}
+
+static struct notifier_block mtk_sysirq_pm_nb = {
+	.notifier_call = mtk_sysirq_pm_notify,
+};
+
+static const struct syscore_ops mtk_sysirq_syscore_ops = {
+	.suspend	= mtk_sysirq_suspend,
+	.resume		= mtk_sysirq_resume,
+};
+
+static struct syscore mtk_sysirq_syscore = {
+	.ops = &mtk_sysirq_syscore_ops,
+};
+
+static int __init mtk_sysirq_pm_init(void)
+{
+	struct mtk_sysirq_chip_data *cd = sysirq_pm_data;
+	u32 i, n = 0;
+
+	if (!cd)
+		return 0;
+
+	for (i = 0; i < cd->nr_intpol_bases; i++)
+		n += cd->intpol_words[i];
+	cd->saved = kcalloc(n, sizeof(*cd->saved), GFP_KERNEL);
+	if (cd->saved) {
+		register_syscore(&mtk_sysirq_syscore);
+		register_pm_notifier(&mtk_sysirq_pm_nb);
+	}
+
+	return 0;
+}
+core_initcall(mtk_sysirq_pm_init);
+#endif
