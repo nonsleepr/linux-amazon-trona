@@ -1392,10 +1392,32 @@ static int mtk_thermal_probe(struct platform_device *pdev)
  * valid any more. Set it up again, and wait for the first valid reading:
  * SVS, resumed next, wants a temperature right away.
  */
+/* True when every sensor of the controller has a valid reading */
+static bool mtk_thermal_all_sensors_valid(struct mtk_thermal *mt)
+{
+	const struct mtk_thermal_data *conf = mt->conf;
+	bool valid = true;
+	int b, i;
+
+	for (b = 0; b < conf->num_banks; b++) {
+		mtk_thermal_get_bank(&mt->banks[b]);
+		for (i = 0; i < conf->bank_data[b].num_sensors; i++) {
+			int temp = mt->raw_to_mcelsius(mt, conf->bank_data[b].sensors[i],
+						       readl(mt->thermal_base + conf->msr[i]));
+
+			if (!mtk_thermal_temp_is_valid(temp))
+				valid = false;
+		}
+		mtk_thermal_put_bank(&mt->banks[b]);
+	}
+
+	return valid;
+}
+
 static int mtk_thermal_resume(struct device *dev)
 {
 	struct mtk_thermal *mt = dev_get_drvdata(dev);
-	int i, b, temp = INT_MIN;
+	int i;
 	int ret;
 
 	ret = device_reset_optional(dev);
@@ -1404,13 +1426,15 @@ static int mtk_thermal_resume(struct device *dev)
 
 	mtk_thermal_hw_init(mt);
 
-	for (i = 0; i < 20 && !mtk_thermal_temp_is_valid(temp); i++) {
+	/*
+	 * The first valid reading of any sensor is not enough: SVS reads the
+	 * GPU zone on its own resume and the GPU sensor was seen to still be
+	 * invalid then. Wait for all of them, up to 300 ms.
+	 */
+	for (i = 0; i < 30; i++) {
 		msleep(10);
-		for (b = 0; b < mt->conf->num_banks; b++) {
-			mtk_thermal_get_bank(&mt->banks[b]);
-			temp = max(temp, mtk_thermal_bank_temperature(&mt->banks[b]));
-			mtk_thermal_put_bank(&mt->banks[b]);
-		}
+		if (mtk_thermal_all_sensors_valid(mt))
+			break;
 	}
 
 	return 0;
