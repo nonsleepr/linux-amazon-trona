@@ -46,6 +46,7 @@
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/irqchip/arm-gic-v3.h>
+#include <linux/moduleparam.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
@@ -82,6 +83,9 @@
 
 /* SPM registers */
 #define SPM_IRQ_STA			0x158
+#define SPM_WAKEUP_STA			0x15c
+#define SPM_WAKEUP_MISC			0x164
+#define SPM_SW_RSV_0			0x608	/* the firmware's copy of PCM_REG12, the wake sources */
 #define PCM_REG15_DATA			0x13c	/* 0 while the firmware is stopped */
 
 /* SPM_GET_PWR_CTRL_ARGS: scenario and field */
@@ -92,6 +96,37 @@
 #define MT8183_PSCI_SUSPEND		0x01010005
 
 #define PCM_WDT_TIMEOUT_S		30
+
+/* The SPM's wake sources, bit by bit (R12) */
+static const char * const wake_src_names[32] = {
+	"PCM_TIMER", "SSPM_WDT", "KEYPAD", "APWDT", "APXGPT1", "CONN2AP",
+	"EINT", "CONN_WDT", "CCIF0", "LOWBATTERY", "SSPM_SPM_IRQ",
+	"SCP_SPM_IRQ", "SCP_WDT", "PCM_WDT", "USB_CDSC", "USB_POWERDWN",
+	"SYS_TIMER", "EINT_SECURE", "CCIF1", "UART0", "AFE", "THERM_CTRL",
+	"SYS_CIRQ", "MD2AP_PEER", "CSYSPWREQ", "MD1_WDT", "CLDMA", "SEJ_WDT",
+	"ALL_SSPM", "CPU_IRQ", "CPU_WFI_AND", "MCUSYS_IDLE",
+};
+
+/*
+ * Deep suspend is opt-in: with this clear "echo mem > /sys/power/state"
+ * fails with -EOPNOTSUPP (logind then falls back to "freeze") instead of
+ * going into a firmware path that may not come back. Set it at run time,
+ * in /sys/module/mt8183_spm_suspend/parameters, or on the kernel command
+ * line as mt8183_spm_suspend.deep_suspend=1.
+ */
+static bool deep_suspend;
+module_param(deep_suspend, bool, 0644);
+MODULE_PARM_DESC(deep_suspend, "allow suspend to RAM through the vendor SPM (default off)");
+
+/* What woke the last deep suspend, read-only, for the test scripts */
+static unsigned int last_wake_src;
+static unsigned int last_wake_raw;
+static unsigned int last_wake_misc;
+static unsigned int deep_suspend_count;
+module_param(last_wake_src, uint, 0444);
+module_param(last_wake_raw, uint, 0444);
+module_param(last_wake_misc, uint, 0444);
+module_param(deep_suspend_count, uint, 0444);
 
 #define GIC_MAX_SPI_REGS		32
 
@@ -165,6 +200,7 @@ struct mt8183_spm {
 	bool no_mcdi_pause;
 	bool no_sspm;
 	bool prepared;
+	bool wake_unreported;
 	/* GIC distributor, and the SPM's interrupt (INTID) left enabled */
 	void __iomem *gicd;
 	u32 spm_irq;
@@ -376,6 +412,11 @@ static int mt8183_spm_suspend_begin(suspend_state_t state)
 	if (state != PM_SUSPEND_MEM)
 		return 0;
 
+	if (!deep_suspend) {
+		pr_warn_once("deep suspend is off (echo 1 > /sys/module/mt8183_spm_suspend/parameters/deep_suspend)\n");
+		return -EOPNOTSUPP;
+	}
+
 	mt8183_spm_fw_start();
 
 	if (spm.crumbs) {
@@ -393,9 +434,42 @@ static int mt8183_spm_suspend_begin(suspend_state_t state)
 	return 0;
 }
 
+/*
+ * Record what woke the system, from the SPM's own note of it. Reported from
+ * the end callback: printing here, with interrupts off and the devices still
+ * suspended, is not worth the risk.
+ */
+static void mt8183_spm_record_wake(void)
+{
+	last_wake_src = readl(spm.spm_base + SPM_SW_RSV_0);
+	last_wake_raw = readl(spm.spm_base + SPM_WAKEUP_STA);
+	last_wake_misc = readl(spm.spm_base + SPM_WAKEUP_MISC);
+	deep_suspend_count++;
+	spm.wake_unreported = true;
+}
+
+static void mt8183_spm_report_wake(void)
+{
+	char buf[160];
+	int i, len = 0;
+
+	for (i = 0; i < 32; i++)
+		if (last_wake_src & BIT(i))
+			len += scnprintf(buf + len, sizeof(buf) - len, " %s",
+					 wake_src_names[i]);
+
+	pr_info("resume %u: woken by%s (r12 %#x, raw %#x, misc %#x)\n",
+		deep_suspend_count, len ? buf : " nothing recorded",
+		last_wake_src, last_wake_raw, last_wake_misc);
+	spm.wake_unreported = false;
+}
+
 static void mt8183_spm_suspend_end(void)
 {
 	int ret;
+
+	if (spm.wake_unreported)
+		mt8183_spm_report_wake();
 
 	if (!spm.prepared)
 		return;
@@ -438,6 +512,7 @@ static int mt8183_spm_suspend_enter(suspend_state_t state)
 	mt8183_spm_gic_restore();
 	mt8183_spm_crumb(STEP_GIC_RESTORED, 0);
 	pr_debug("back from suspend (method %u): %d\n", spm.method, ret);
+	mt8183_spm_record_wake();
 
 	mt8183_spm_crumb(STEP_SSPM_RESUME, mt8183_spm_sspm_cmd_time(SPM_RESUME));
 	mt8183_spm_crumb(STEP_WDT_OFF,
