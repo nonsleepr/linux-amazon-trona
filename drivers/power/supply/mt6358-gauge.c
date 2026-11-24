@@ -327,6 +327,7 @@ static const enum power_supply_property mt6358_gauge_props[] = {
 	POWER_SUPPLY_PROP_CHARGE_FULL_DESIGN,
 	POWER_SUPPLY_PROP_CHARGE_FULL,
 	POWER_SUPPLY_PROP_CHARGE_NOW,
+	POWER_SUPPLY_PROP_CHARGE_COUNTER,
 	POWER_SUPPLY_PROP_CAPACITY,
 	/* Keep last: only advertised if the DT has a "temp" channel */
 	POWER_SUPPLY_PROP_TEMP,
@@ -378,6 +379,18 @@ static int mt6358_gauge_get_property(struct power_supply *psy,
 		if (ret)
 			return ret;
 		val->intval = mt6358_gauge_charge_now(gg, car);
+		return 0;
+	case POWER_SUPPLY_PROP_CHARGE_COUNTER:
+		/*
+		 * The coulomb counter as it is, since the FGADC was started:
+		 * no OCV correction, so differences of it are the coulombs
+		 * that went through the sense resistor (positive in), also
+		 * over a suspend.
+		 */
+		ret = mt6358_gauge_read_fg(gg, NULL, &car);
+		if (ret)
+			return ret;
+		val->intval = mt6358_gauge_car_to_uah(gg, car);
 		return 0;
 	case POWER_SUPPLY_PROP_CAPACITY:
 		val->intval = gg->capacity;
