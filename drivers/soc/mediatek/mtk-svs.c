@@ -9,6 +9,7 @@
 #include <linux/bits.h>
 #include <linux/clk.h>
 #include <linux/completion.h>
+#include <linux/delay.h>
 #include <linux/cleanup.h>
 #include <linux/cpu.h>
 #include <linux/cpuidle.h>
@@ -135,6 +136,7 @@
 #define SVSB_DC_SIGNED_BIT		BIT(15)
 #define SVSB_DET_CLK_EN			BIT(31)
 #define SVSB_TEMP_LOWER_BOUND		0xb2
+#define SVS_RESUME_THERMAL_WAIT_MS	500
 #define SVSB_TEMP_UPPER_BOUND		0x64
 
 static DEFINE_SPINLOCK(svs_lock);
@@ -1379,6 +1381,7 @@ static irqreturn_t svs_isr(int irq, void *data)
 	struct svs_bank *svsb = NULL;
 	unsigned long flags;
 	u32 idx, int_sts, svs_en;
+	bool init02 = false;
 
 	for (idx = 0; idx < svsp->bank_max; idx++) {
 		svsb = &svsp->banks[idx];
@@ -1396,6 +1399,7 @@ static irqreturn_t svs_isr(int irq, void *data)
 		svs_switch_bank(svsp, svsb);
 		int_sts = svs_readl_relaxed(svsp, INTSTS);
 		svs_en = svs_readl_relaxed(svsp, SVSEN);
+		init02 = svs_en == SVSB_PTPEN_INIT02;
 
 		if (int_sts == SVSB_INTSTS_F0_COMPLETE &&
 		    svs_en == SVSB_PTPEN_INIT01)
@@ -1414,8 +1418,13 @@ static irqreturn_t svs_isr(int irq, void *data)
 
 	svs_adjust_pm_opp_volts(svsb);
 
+	/*
+	 * svs_adjust_pm_opp_volts() puts the bank in the error phase when it
+	 * can't read the temperature. The init02 that was waiting for this
+	 * interrupt is done all the same: don't leave it to its 5 s timeout.
+	 */
 	if (svsb->phase == SVSB_PHASE_INIT01 ||
-	    svsb->phase == SVSB_PHASE_INIT02)
+	    svsb->phase == SVSB_PHASE_INIT02 || init02)
 		complete(&svsb->init_completion);
 
 	return IRQ_HANDLED;
@@ -1636,6 +1645,14 @@ static int svs_init02(struct svs_platform *svsp)
 			ret = -EBUSY;
 			goto out_of_init02;
 		}
+
+		/*
+		 * No usable voltages (e.g. no valid temperature yet): the
+		 * bank keeps its default ones, and its monitor mode takes over
+		 * once the temperature can be read. The other banks go on.
+		 */
+		if (svsb->phase == SVSB_PHASE_ERROR)
+			dev_warn(svsb->dev, "init02 ended in the error phase, default volts for now\n");
 	}
 
 	/*
@@ -1728,6 +1745,35 @@ static int svs_suspend(struct device *dev)
 	return 0;
 }
 
+/*
+ * After a system resume the thermal controller is set up again and its
+ * sensors need a while for their first valid reading; the GPU one was seen
+ * to still return -EAGAIN when SVS resumed. Bounded, shared by all banks.
+ */
+static void svs_resume_wait_thermal(struct svs_platform *svsp)
+{
+	unsigned long end = jiffies + msecs_to_jiffies(SVS_RESUME_THERMAL_WAIT_MS);
+	u32 idx;
+	int temp;
+
+	for (idx = 0; idx < svsp->bank_max; idx++) {
+		struct svs_bank *svsb = &svsp->banks[idx];
+
+		if (IS_ERR_OR_NULL(svsb->tzd) ||
+		    !(svsb->mode_support & SVSB_MODE_INIT02))
+			continue;
+
+		while (thermal_zone_get_temp(svsb->tzd, &temp)) {
+			if (time_after(jiffies, end)) {
+				dev_warn(svsb->dev, "%s: no valid temperature after resume\n",
+					 svsb->pdata.tzone_name);
+				break;
+			}
+			msleep(10);
+		}
+	}
+}
+
 static int svs_resume(struct device *dev)
 {
 	struct svs_platform *svsp = dev_get_drvdata(dev);
@@ -1744,6 +1790,8 @@ static int svs_resume(struct device *dev)
 		dev_err(svsp->dev, "cannot deassert reset %d\n", ret);
 		goto out_of_resume;
 	}
+
+	svs_resume_wait_thermal(svsp);
 
 	ret = svs_init02(svsp);
 	if (ret)
