@@ -53,7 +53,8 @@
 /*
  * Scaling from MediaTek's gauge HAL, for its reference 10 mOhm sense
  * resistor: 381.47 uA per current LSB, and 0.108507 mAh per 2^11 coulomb
- * counter LSBs (the counter integrates the current every 0.5 ms).
+ * counter LSBs (the counter integrates the current every 0.5 ms, positive
+ * while charging). Measured on the tablet: ~52.5 nAh per LSB.
  */
 #define MT6358_FG_REF_RSENSE_UOHM	10000
 #define MT6358_FG_CUR_NA_PER_LSB	381470
@@ -150,11 +151,17 @@ static int mt6358_gauge_read_fg(struct mt6358_gauge *gg, int *curr_ua, s32 *car)
 	return 0;
 }
 
+/*
+ * Positive in, like the current. The divisor is 2048 * 1000 * 10000 = 2.048e10:
+ * div_s64() takes a 32-bit divisor and truncated it to -994836480, which made the
+ * charge come out 20.6 times too large and with the wrong sign (capacity fell
+ * to 0 % within minutes of charging).
+ */
 static s64 mt6358_gauge_car_to_uah(struct mt6358_gauge *gg, s32 car)
 {
-	return div_s64((s64)car * MT6358_FG_CAR_NAH_PER_2K_LSB *
-		       MT6358_FG_REF_RSENSE_UOHM,
-		       2048LL * 1000 * gg->rsense_uohm);
+	return div64_s64((s64)car * MT6358_FG_CAR_NAH_PER_2K_LSB *
+			 MT6358_FG_REF_RSENSE_UOHM,
+			 2048LL * 1000 * gg->rsense_uohm);
 }
 
 static int mt6358_gauge_read_vbat(struct mt6358_gauge *gg, int *volt_uv)
