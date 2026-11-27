@@ -579,6 +579,12 @@
 					   "vbat", "ts_bat", "ibus", "ibat",
 					   "chg_vddp", "temp_jc";
 			monitored-battery = <&battery>;
+			/*
+			 * By name, not a power-supplies phandle: that would hold
+			 * the charger's probe until the (modular) TCPC is up and
+			 * block it for good if the TCPC never binds.
+			 */
+			supplied-from = "tcpm-source-psy-mt6370-tcpc.4.auto";
 		};
 
 		flashlight {

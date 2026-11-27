@@ -55,6 +55,8 @@
 #define MT6370_AICR_SDP_UA		500000
 #define MT6370_AICR_CDP_UA		1500000
 #define MT6370_AICR_DCP_UA		2000000
+/* Cap for what a Type-C source may raise it to: the sink PDO and the battery's charge current are 2 A */
+#define MT6370_AICR_TYPEC_MAX_UA	2000000
 #define MT6370_ADC_CHAN_MAX		9
 
 enum mt6370_chg_reg_field {
@@ -113,6 +115,8 @@ struct mt6370_priv {
 	bool usb_phy_bc12;
 	bool bc12_running;
 	struct delayed_work bc12_timeout_dwork;
+	/* Input current limit from the BC1.2 result */
+	unsigned int bc12_aicr;
 };
 
 enum mt6370_usb_status {
@@ -301,6 +305,37 @@ static void mt6370_chg_bc12_timeout_func(struct work_struct *work)
 	mutex_unlock(&priv->attach_lock);
 }
 
+/*
+ * BC1.2 only knows what the D+/D- lines say, and a Type-C charger need not
+ * signal on them at all (SDP, 500 mA, from a 3 A source). The Type-C source's
+ * advertised or negotiated current counts as well; use the larger one. It is
+ * asked for every time, never cached: it doesn't change when VBUS blips and
+ * BC1.2 runs again. Called with attach_lock held.
+ */
+static void mt6370_chg_update_aicr(struct mt6370_priv *priv)
+{
+	union power_supply_propval val;
+	unsigned int aicr = priv->bc12_aicr;
+	int ret;
+
+	/* Nothing to apply while BC1.2 runs; its result sets the limit */
+	if (priv->attach == MT6370_ATTACH_STAT_ATTACH_WAIT_FOR_BC12)
+		return;
+
+	/* The Type-C port manager's supply, named by "supplied-from" in the DT */
+	if (priv->attach == MT6370_ATTACH_STAT_ATTACH_BC12_DONE &&
+	    !power_supply_get_property_from_supplier(priv->psy,
+						     POWER_SUPPLY_PROP_CURRENT_MAX,
+						     &val) && val.intval > 0)
+		aicr = max_t(unsigned int, aicr,
+			     min_t(unsigned int, val.intval,
+				   MT6370_AICR_TYPEC_MAX_UA));
+
+	ret = mt6370_chg_field_set(priv, F_IAICR, aicr);
+	if (ret)
+		dev_err(priv->dev, "Failed to set input current limit\n");
+}
+
 static void mt6370_chg_bc12_work_func(struct work_struct *work)
 {
 	struct mt6370_priv *priv = container_of(work, struct mt6370_priv,
@@ -368,9 +403,8 @@ static void mt6370_chg_bc12_work_func(struct work_struct *work)
 		break;
 	}
 
-	ret = mt6370_chg_field_set(priv, F_IAICR, aicr);
-	if (ret)
-		dev_err(priv->dev, "Failed to set input current limit\n");
+	priv->bc12_aicr = aicr;
+	mt6370_chg_update_aicr(priv);
 
 bc12_work_func_out:
 	mutex_unlock(&priv->attach_lock);
@@ -693,6 +727,15 @@ static enum power_supply_property mt6370_chg_properties[] = {
 	POWER_SUPPLY_PROP_USB_TYPE,
 };
 
+static void mt6370_chg_external_power_changed(struct power_supply *psy)
+{
+	struct mt6370_priv *priv = power_supply_get_drvdata(psy);
+
+	mutex_lock(&priv->attach_lock);
+	mt6370_chg_update_aicr(priv);
+	mutex_unlock(&priv->attach_lock);
+}
+
 static const struct power_supply_desc mt6370_chg_psy_desc = {
 	.name = "mt6370-charger",
 	.type = POWER_SUPPLY_TYPE_USB,
@@ -701,6 +744,7 @@ static const struct power_supply_desc mt6370_chg_psy_desc = {
 	.get_property = mt6370_chg_get_property,
 	.set_property = mt6370_chg_set_property,
 	.property_is_writeable = mt6370_chg_property_is_writeable,
+	.external_power_changed = mt6370_chg_external_power_changed,
 	.usb_types = BIT(POWER_SUPPLY_USB_TYPE_SDP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_CDP) |
 		     BIT(POWER_SUPPLY_USB_TYPE_DCP) |
