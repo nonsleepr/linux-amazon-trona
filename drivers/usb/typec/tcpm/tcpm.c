@@ -5698,6 +5698,16 @@ static void run_state_machine(struct tcpm_port *port)
 		tcpm_set_cc(port, TYPEC_CC_RD);
 		if (port->port_type == TYPEC_PORT_DRP)
 			tcpm_set_state(port, SRC_UNATTACHED, PD_T_DRP_SRC);
+		else if (tcpm_port_is_sink(port))
+			/*
+			 * CC changes are ignored while in PORT_RESET*, and a
+			 * sink-only port keeps Rd up through the reset, so a
+			 * source that was already attached (cable plugged in
+			 * at boot) never signals another change. Attach from
+			 * the cached CC state; a later change is handled in
+			 * SNK_ATTACH_WAIT as usual.
+			 */
+			tcpm_set_state(port, SNK_ATTACH_WAIT, 0);
 		break;
 	case SNK_ATTACH_WAIT:
 		if (tcpm_port_is_debug_sink(port))
